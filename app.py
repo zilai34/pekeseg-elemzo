@@ -32,45 +32,55 @@ def save_to_drive(df):
     service = get_drive_service()
     if not service: return
     
-    # Adatok előkészítése CSV formátumba a memóriában
-    csv_data = df.to_csv(index=False, sep=';', decimal=',', encoding='latin-1')
-    fh = io.BytesIO(csv_data.encode('latin-1'))
-    media = MediaIoBaseUpload(fh, mimetype='text/csv', resumable=True)
-    
-    # Megnézzük, létezik-e már a fájl
-    query = f"name='pekseg_db.csv' and '{MAPPA_ID}' in parents and trashed = false"
-    results = service.files().list(q=query, fields="files(id)").execute()
-    items = results.get('files', [])
-    
-    if items:
-        # Frissítés
-        service.files().update(fileId=items[0]['id'], media_body=media).execute()
-        st.success("✅ Adatbázis sikeresen frissítve a felhőben!")
-    else:
-        # Új fájl létrehozása
-        file_metadata = {'name': 'pekseg_db.csv', 'parents': [MAPPA_ID]}
-        service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        st.success("✅ Új adatbázis létrehozva a felhőben!")
+    try:
+        # CSV adatok előkészítése a memóriában
+        csv_data = df.to_csv(index=False, sep=';', decimal=',', encoding='latin-1')
+        fh = io.BytesIO(csv_data.encode('latin-1'))
+        
+        # STABIL FELTÖLTÉS (resumable=False a ResumableUploadError elkerülésére)
+        media = MediaIoBaseUpload(fh, mimetype='text/csv', resumable=False)
+        
+        # Megnézzük, létezik-e már a fájl
+        query = f"name='pekseg_db.csv' and '{MAPPA_ID}' in parents and trashed = false"
+        results = service.files().list(q=query, fields="files(id)").execute()
+        items = results.get('files', [])
+        
+        if items:
+            # Meglévő fájl frissítése
+            service.files().update(fileId=items[0]['id'], media_body=media).execute()
+            st.success("✅ Adatbázis sikeresen frissítve a felhőben!")
+        else:
+            # Új fájl létrehozása a megadott mappában
+            file_metadata = {'name': 'pekseg_db.csv', 'parents': [MAPPA_ID]}
+            service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+            st.success("✅ Új adatbázis létrehozva a felhőben!")
+            
+    except Exception as e:
+        st.error(f"❌ Mentési hiba: {e}")
 
 def load_from_drive():
     service = get_drive_service()
     if not service: return None
     
-    query = f"name='pekseg_db.csv' and '{MAPPA_ID}' in parents and trashed = false"
-    results = service.files().list(q=query, fields="files(id)").execute()
-    items = results.get('files', [])
-    
-    if not items:
+    try:
+        query = f"name='pekseg_db.csv' and '{MAPPA_ID}' in parents and trashed = false"
+        results = service.files().list(q=query, fields="files(id)").execute()
+        items = results.get('files', [])
+        
+        if not items:
+            return None
+        
+        request = service.files().get_media(fileId=items[0]['id'])
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+        fh.seek(0)
+        return pd.read_csv(fh, sep=';', decimal=',', encoding='latin-1')
+    except Exception as e:
+        st.warning(f"Nem sikerült betölteni az adatokat a felhőből: {e}")
         return None
-    
-    request = service.files().get_media(fileId=items[0]['id'])
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done:
-        status, done = downloader.next_chunk()
-    fh.seek(0)
-    return pd.read_csv(fh, sep=';', decimal=',', encoding='latin-1')
 
 # ==========================================
 # 3. BELÉPÉSI RENDSZER
@@ -98,7 +108,7 @@ if not st.session_state["bejelentkezve"]:
 # ==========================================
 st.title("📊 Pékség YoY Dashboard & Felhő Adatbázis")
 
-# Automatikus betöltés indításkor
+# Automatikus betöltés indításkor a felhőből
 if 'df_final' not in st.session_state:
     with st.spinner('Adatok beolvasása a Drive-ról...'):
         st.session_state['df_final'] = load_from_drive()
@@ -117,7 +127,7 @@ with st.sidebar:
     st.subheader("⚙️ Beállítások")
     aremele_merteke = st.number_input("Tervezett áremelés (%)", value=0)
 
-# Új fájlok feldolgozása
+# Új fájlok feldolgozása és összefűzése a meglévőkkel
 if uploaded_files:
     temp_list = []
     if st.session_state['df_final'] is not None:
@@ -138,16 +148,14 @@ if uploaded_files:
 df = st.session_state['df_final']
 
 if df is not None:
-    # Adattisztítás
+    # Adattisztítás: oszlopnév javítás, raklap szűrés, dátum formázás
     if 'ST_NE' in df.columns:
         df = df.rename(columns={'ST_NE': 'ST_NEFT'})
     
-    # Raklap és üres dátumok kiszűrése
     df = df[df['ST_CIKKSZAM'].astype(str).str.strip() != RAKLAP_KOD]
     df['SF_TELJ'] = pd.to_datetime(df['SF_TELJ'], errors='coerce')
     df = df.dropna(subset=['SF_TELJ'])
     
-    # Segédoszlopok
     df['Ev'] = df['SF_TELJ'].dt.year
     df['Honap'] = df['SF_TELJ'].dt.strftime('%m')
     df['Termek_Kereso'] = df['ST_CIKKSZAM'].astype(str) + " - " + df['ST_CIKKNEV']
@@ -164,18 +172,19 @@ if df is not None:
     if v_termekek:
         f_df = f_df[f_df['Termek_Kereso'].isin(v_termekek)]
 
-    # Táblázat megjelenítése (STABIL VERZIÓ)
+    # Táblázat megjelenítése (STABIL VERZIÓ - AttributeError ellen)
     st.subheader("Havi nettó árbevétel alakulása (Év/Év)")
     stats = f_df.groupby(['Honap', 'Ev'])['ST_NEFT'].sum().unstack()
     
     if not stats.empty:
+        # Modern formázás az új Streamlit verziókhoz
         st.dataframe(
             stats, 
             use_container_width=True,
             column_config={str(ev): st.column_config.NumberColumn(format="%.0f Ft") for ev in stats.columns}
         )
         
-        # Grafikon
+        # Interaktív Bár diagram
         fig = px.bar(
             f_df.groupby(['Honap', 'Ev'])['ST_NEFT'].sum().reset_index(), 
             x='Honap', y='ST_NEFT', color='Ev', barmode='group',
@@ -186,28 +195,27 @@ if df is not None:
     else:
         st.warning("Nincs megjeleníthető adat a kiválasztott szűrőkkel.")
 
-    # OpenAI AI Elemzés
+    # OpenAI AI Elemzés szekció
     st.divider()
     st.subheader("🤖 Mesterséges Intelligencia Elemzése")
-    openai_key = st.text_input("OpenAI API kulcs beírása:", type="password")
+    openai_key = st.text_input("OpenAI API kulcs beírása az elemzéshez:", type="password")
     
-    if st.button("Elemzés indítása"):
+    if st.button("Vezetői összefoglaló generálása"):
         if openai_key:
             try:
                 client = OpenAI(api_key=openai_key)
-                # Adatok tömörítése az AI-nak
                 ai_data = f_df.groupby(['Ev', 'Honap'])['ST_NEFT'].sum().to_string()
-                prompt = f"Te egy üzleti elemző vagy. Itt a pékség árbevétele:\n{ai_data}\nÁremelés: {aremele_merteke}%. Írj 5 fontos pontot magyarul!"
+                prompt = f"Te egy profi üzleti elemző vagy. Itt a pékség árbevétele:\n{ai_data}\nTervezett áremelés: {aremele_merteke}%. Írj 5 lényegre törő pontot a tulajdonosnak magyarul!"
                 
-                with st.spinner('Az AI elemzi az adatokat...'):
+                with st.spinner('Az AI elemzi a számokat...'):
                     response = client.chat.completions.create(
                         model="gpt-4o",
                         messages=[{"role": "user", "content": prompt}]
                     )
                     st.info(response.choices[0].message.content)
             except Exception as e:
-                st.error(f"AI hiba: {e}")
+                st.error(f"AI szolgáltatási hiba: {e}")
         else:
-            st.error("Az elemzéshez meg kell adnod az OpenAI API kulcsodat!")
+            st.error("Kérlek add meg az OpenAI API kulcsodat!")
 else:
-    st.info("Az adatbázis üres. Tölts fel CSV fájlokat a bal oldali sávban!")
+    st.info("Az adatbázis jelenleg üres. Tölts fel havi CSV fájlokat a bal oldali sávban!")
