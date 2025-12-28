@@ -8,7 +8,6 @@ RAKLAP_KOD = '146'
 
 st.set_page_config(page_title="Pékség Dashboard", layout="wide")
 
-# Belépés
 if "bejelentkezve" not in st.session_state:
     st.session_state["bejelentkezve"] = False
 
@@ -30,46 +29,37 @@ with st.sidebar:
 if uploaded_files:
     temp_list = []
     for f in uploaded_files:
-        # Kényszerített latin-1 kódolás a magyar karakterek miatt
         data = pd.read_csv(f, sep=';', decimal=',', encoding='latin-1')
         temp_list.append(data)
     
     df = pd.concat(temp_list, ignore_index=True).drop_duplicates()
     
-    # Oszlopnevek és szűrések
     if 'ST_NE' in df.columns: df = df.rename(columns={'ST_NE': 'ST_NEFT'})
     df = df[df['ST_CIKKSZAM'].astype(str).str.strip() != RAKLAP_KOD]
     df['SF_TELJ'] = pd.to_datetime(df['SF_TELJ'], errors='coerce')
     df = df.dropna(subset=['SF_TELJ'])
-    df['Ev'] = df['SF_TELJ'].dt.year
+    df['Ev'] = df['SF_TELJ'].dt.year.astype(str) # Év szövegként a jobb szűréshez
     df['Honap'] = df['SF_TELJ'].dt.strftime('%m')
 
-    # Szűrő
-    partnerek = ["Összes"] + sorted(df['SF_UGYFELNEV'].unique().tolist())
-    v_partner = st.selectbox("Partner választása:", partnerek)
+    v_partner = st.selectbox("Partner:", ["Összes"] + sorted(df['SF_UGYFELNEV'].unique().tolist()))
 
     f_df = df.copy()
-    if v_partner != "Összes":
-        f_df = f_df[f_df['SF_UGYFELNEV'] == v_partner]
+    if v_partner != "Összes": f_df = f_df[f_df['SF_UGYFELNEV'] == v_partner]
 
-    st.subheader(f"Árbevétel alakulása: {v_partner}")
-    
-    # Adatok összesítése
+    # TÁBLÁZAT (HTML módban a stabilitásért)
+    st.subheader(f"Adatok: {v_partner}")
     stats = f_df.groupby(['Honap', 'Ev'])['ST_NEFT'].sum().unstack().fillna(0).astype(int)
-    
-    # --- A VÉGSŐ JAVÍTÁS ---
-    # Ha a st.dataframe és a st.table is hiba, akkor HTML-ként íratjuk ki
-    # Ez megkerüli az összes Streamlit-specifikus táblázatkezelési hibát
-    st.write("### Havi adatok (Ft)")
-    st.write(stats.to_html(escape=False), unsafe_allow_html=True)
+    st.write(stats.to_html(), unsafe_allow_html=True)
     
     st.divider()
 
-    # Grafikon - Remélhetőleg a Plotly nem dob hibát (más könyvtár)
-    fig = px.bar(f_df.groupby(['Honap', 'Ev'])['ST_NEFT'].sum().reset_index(), 
-                 x='Honap', y='ST_NEFT', color='Ev', barmode='group',
-                 labels={'ST_NEFT': 'Nettó árbevétel'})
+    # GRAFIKON (Javított, egyedi oszlopnevekkel)
+    chart_data = f_df.groupby(['Honap', 'Ev'])['ST_NEFT'].sum().reset_index()
+    chart_data.columns = ['Honap', 'Ev', 'Bevetel']
+    
+    fig = px.bar(chart_data, x='Honap', y='Bevetel', color='Ev', 
+                 barmode='group', title="Havi árbevétel összehasonlítása")
+    fig.update_xaxes(type='category')
     st.plotly_chart(fig, use_container_width=True)
-
 else:
-    st.info("Kérlek, töltsd fel a CSV fájlokat a bal oldalon.")
+    st.info("Tölts fel CSV-ket!")
