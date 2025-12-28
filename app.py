@@ -2,99 +2,27 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from openai import OpenAI
-import json
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 import io
 
 # ==========================================
-# 1. KONFIGURÁCIÓ ÉS BEÁLLÍTÁSOK
+# 1. KONFIGURÁCIÓ
 # ==========================================
-MAPPA_ID = '1HkDyBW7bDWpDPSRzfQ3ZQSnPMUo8k1Vz' 
 HIVATALOS_JELSZO = "Velencei670905"
 RAKLAP_KOD = '146'
 
 # ==========================================
-# 2. GOOGLE DRIVE MOTOR (GCP)
+# 2. BELÉPÉSI RENDSZER
 # ==========================================
-def get_drive_service():
-    try:
-        # A Secrets-ből olvassa be a dupla visszaperjeles JSON-t
-        info = json.loads(st.secrets["gcp_service_account"])
-        creds = service_account.Credentials.from_service_account_info(info)
-        return build('drive', 'v3', credentials=creds)
-    except Exception as e:
-        st.error(f"⚠️ Kritikus hiba a Google elérésekor: {e}")
-        return None
-
-def save_to_drive(df):
-    service = get_drive_service()
-    if not service: return
-    
-    try:
-        # CSV adatok előkészítése a memóriában
-        csv_data = df.to_csv(index=False, sep=';', decimal=',', encoding='latin-1')
-        fh = io.BytesIO(csv_data.encode('latin-1'))
-        
-        # STABIL FELTÖLTÉS (resumable=False a ResumableUploadError elkerülésére)
-        media = MediaIoBaseUpload(fh, mimetype='text/csv', resumable=False)
-        
-        # Megnézzük, létezik-e már a fájl
-        query = f"name='pekseg_db.csv' and '{MAPPA_ID}' in parents and trashed = false"
-        results = service.files().list(q=query, fields="files(id)").execute()
-        items = results.get('files', [])
-        
-        if items:
-            # Meglévő fájl frissítése
-            service.files().update(fileId=items[0]['id'], media_body=media).execute()
-            st.success("✅ Adatbázis sikeresen frissítve a felhőben!")
-        else:
-            # Új fájl létrehozása a megadott mappában
-            file_metadata = {'name': 'pekseg_db.csv', 'parents': [MAPPA_ID]}
-            service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-            st.success("✅ Új adatbázis létrehozva a felhőben!")
-            
-    except Exception as e:
-        st.error(f"❌ Mentési hiba: {e}")
-
-def load_from_drive():
-    service = get_drive_service()
-    if not service: return None
-    
-    try:
-        query = f"name='pekseg_db.csv' and '{MAPPA_ID}' in parents and trashed = false"
-        results = service.files().list(q=query, fields="files(id)").execute()
-        items = results.get('files', [])
-        
-        if not items:
-            return None
-        
-        request = service.files().get_media(fileId=items[0]['id'])
-        fh = io.BytesIO()
-        downloader = MediaIoBaseDownload(fh, request)
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-        fh.seek(0)
-        return pd.read_csv(fh, sep=';', decimal=',', encoding='latin-1')
-    except Exception as e:
-        st.warning(f"Nem sikerült betölteni az adatokat a felhőből: {e}")
-        return None
-
-# ==========================================
-# 3. BELÉPÉSI RENDSZER
-# ==========================================
-st.set_page_config(page_title="Pékség Vezetői Dashboard", layout="wide")
+st.set_page_config(page_title="Pékség Dashboard (Teszt)", layout="wide")
 
 if "bejelentkezve" not in st.session_state:
     st.session_state["bejelentkezve"] = False
 
 if not st.session_state["bejelentkezve"]:
-    st.title("🔐 Pékség Adatbázis - Belépés")
+    st.title("🔐 Pékség Belépés")
     col_login, _ = st.columns([1, 2])
     with col_login:
-        jelszo_input = st.text_input("Kérem a jelszót:", type="password")
+        jelszo_input = st.text_input("Jelszó:", type="password")
         if st.button("Belépés"):
             if jelszo_input == HIVATALOS_JELSZO:
                 st.session_state["bejelentkezve"] = True
@@ -104,118 +32,89 @@ if not st.session_state["bejelentkezve"]:
     st.stop()
 
 # ==========================================
-# 4. ADATOK BETÖLTÉSE ÉS OLDALSÁV
+# 3. OLDALSÁV ÉS FELTÖLTÉS
 # ==========================================
-st.title("📊 Pékség YoY Dashboard & Felhő Adatbázis")
-
-# Automatikus betöltés indításkor a felhőből
-if 'df_final' not in st.session_state:
-    with st.spinner('Adatok beolvasása a Drive-ról...'):
-        st.session_state['df_final'] = load_from_drive()
+st.title("📊 Pékség Adat-Elemző (Drive nélkül)")
 
 with st.sidebar:
-    st.header("📁 Adatok Kezelése")
-    uploaded_files = st.file_uploader("Új havi CSV fájlok kiválasztása", type="csv", accept_multiple_files=True)
-    
-    if st.button("💾 MENTÉS A FELHŐBE"):
-        if st.session_state['df_final'] is not None:
-            save_to_drive(st.session_state['df_final'])
-        else:
-            st.warning("Nincs menthető adat az adatbázisban!")
+    st.header("📁 Adatfeltöltés")
+    st.info("Ebben a módban a mentés nem marad meg frissítés után.")
+    uploaded_files = st.file_uploader("Válassz ki egy vagy több havi CSV-t", type="csv", accept_multiple_files=True)
     
     st.divider()
-    st.subheader("⚙️ Beállítások")
-    aremele_merteke = st.number_input("Tervezett áremelés (%)", value=0)
+    aremele_merteke = st.number_input("Áremelés (%)", value=0)
 
-# Új fájlok feldolgozása és összefűzése a meglévőkkel
+# Adatok feldolgozása a memóriában
 if uploaded_files:
     temp_list = []
-    if st.session_state['df_final'] is not None:
-        temp_list.append(st.session_state['df_final'])
-    
     for f in uploaded_files:
-        new_data = pd.read_csv(f, sep=';', decimal=',', encoding='latin-1')
-        temp_list.append(new_data)
+        try:
+            # Megpróbáljuk beolvasni a fájlt
+            new_data = pd.read_csv(f, sep=';', decimal=',', encoding='latin-1')
+            temp_list.append(new_data)
+        except Exception as e:
+            st.error(f"Hiba a fájl beolvasásakor ({f.name}): {e}")
     
-    # Összefűzés és duplikációk szűrése
-    combined_df = pd.concat(temp_list, ignore_index=True).drop_duplicates()
-    st.session_state['df_final'] = combined_df
-    st.info("💡 Új adatok hozzáadva a nézethez. Ne felejts el menteni a felhőbe!")
-
-# ==========================================
-# 5. ELEMZÉS ÉS VIZUALIZÁCIÓ
-# ==========================================
-df = st.session_state['df_final']
-
-if df is not None:
-    # Adattisztítás: oszlopnév javítás, raklap szűrés, dátum formázás
-    if 'ST_NE' in df.columns:
-        df = df.rename(columns={'ST_NE': 'ST_NEFT'})
-    
-    df = df[df['ST_CIKKSZAM'].astype(str).str.strip() != RAKLAP_KOD]
-    df['SF_TELJ'] = pd.to_datetime(df['SF_TELJ'], errors='coerce')
-    df = df.dropna(subset=['SF_TELJ'])
-    
-    df['Ev'] = df['SF_TELJ'].dt.year
-    df['Honap'] = df['SF_TELJ'].dt.strftime('%m')
-    df['Termek_Kereso'] = df['ST_CIKKSZAM'].astype(str) + " - " + df['ST_CIKKNEV']
-
-    # Szűrők a főoldalon
-    c1, c2 = st.columns(2)
-    v_partner = c1.selectbox("Válassz partnert:", ["Összes"] + sorted(df['SF_UGYFELNEV'].unique().tolist()))
-    v_termekek = c2.multiselect("Válassz termékeket:", sorted(df['Termek_Kereso'].unique().tolist()))
-
-    # Szűrés végrehajtása
-    f_df = df.copy()
-    if v_partner != "Összes":
-        f_df = f_df[f_df['SF_UGYFELNEV'] == v_partner]
-    if v_termekek:
-        f_df = f_df[f_df['Termek_Kereso'].isin(v_termekek)]
-
-    # Táblázat megjelenítése (STABIL VERZIÓ - AttributeError ellen)
-    st.subheader("Havi nettó árbevétel alakulása (Év/Év)")
-    stats = f_df.groupby(['Honap', 'Ev'])['ST_NEFT'].sum().unstack()
-    
-    if not stats.empty:
-        # Modern formázás az új Streamlit verziókhoz
-        st.dataframe(
-            stats, 
-            use_container_width=True,
-            column_config={str(ev): st.column_config.NumberColumn(format="%.0f Ft") for ev in stats.columns}
-        )
+    if temp_list:
+        df = pd.concat(temp_list, ignore_index=True).drop_duplicates()
         
-        # Interaktív Bár diagram
-        fig = px.bar(
-            f_df.groupby(['Honap', 'Ev'])['ST_NEFT'].sum().reset_index(), 
-            x='Honap', y='ST_NEFT', color='Ev', barmode='group',
-            labels={'ST_NEFT': 'Nettó árbevétel (Ft)', 'Honap': 'Hónap'},
-            height=500
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.warning("Nincs megjeleníthető adat a kiválasztott szűrőkkel.")
+        # --- ADATTISZTÍTÁS ---
+        if 'ST_NE' in df.columns:
+            df = df.rename(columns={'ST_NE': 'ST_NEFT'})
+        
+        # Raklap szűrés és dátum kezelés
+        df = df[df['ST_CIKKSZAM'].astype(str).str.strip() != RAKLAP_KOD]
+        df['SF_TELJ'] = pd.to_datetime(df['SF_TELJ'], errors='coerce')
+        df = df.dropna(subset=['SF_TELJ'])
+        
+        df['Ev'] = df['SF_TELJ'].dt.year
+        df['Honap'] = df['SF_TELJ'].dt.strftime('%m')
+        df['Termek_Kereso'] = df['ST_CIKKSZAM'].astype(str) + " - " + df['ST_CIKKNEV']
 
-    # OpenAI AI Elemzés szekció
-    st.divider()
-    st.subheader("🤖 Mesterséges Intelligencia Elemzése")
-    openai_key = st.text_input("OpenAI API kulcs beírása az elemzéshez:", type="password")
-    
-    if st.button("Vezetői összefoglaló generálása"):
-        if openai_key:
-            try:
+        # --- SZŰRŐK ÉS MEGJELENÍTÉS ---
+        c1, c2 = st.columns(2)
+        v_partner = c1.selectbox("Partner:", ["Összes"] + sorted(df['SF_UGYFELNEV'].unique().tolist()))
+        v_termekek = c2.multiselect("Termékek:", sorted(df['Termek_Kereso'].unique().tolist()))
+
+        f_df = df.copy()
+        if v_partner != "Összes":
+            f_df = f_df[f_df['SF_UGYFELNEV'] == v_partner]
+        if v_termekek:
+            f_df = f_df[f_df['Termek_Kereso'].isin(v_termekek)]
+
+        # Táblázat
+        st.subheader("Havi árbevétel (Év/Év)")
+        stats = f_df.groupby(['Honap', 'Ev'])['ST_NEFT'].sum().unstack()
+        
+        if not stats.empty:
+            st.dataframe(
+                stats, 
+                use_container_width=True,
+                column_config={str(ev): st.column_config.NumberColumn(format="%.0f Ft") for ev in stats.columns}
+            )
+            
+            # Diagram
+            fig = px.bar(
+                f_df.groupby(['Honap', 'Ev'])['ST_NEFT'].sum().reset_index(), 
+                x='Honap', y='ST_NEFT', color='Ev', barmode='group',
+                height=500
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # --- AI RÉSZ ---
+        st.divider()
+        st.subheader("🤖 AI Elemzés")
+        openai_key = st.text_input("OpenAI API kulcs:", type="password")
+        if st.button("Elemzés indítása"):
+            if openai_key:
                 client = OpenAI(api_key=openai_key)
                 ai_data = f_df.groupby(['Ev', 'Honap'])['ST_NEFT'].sum().to_string()
-                prompt = f"Te egy profi üzleti elemző vagy. Itt a pékség árbevétele:\n{ai_data}\nTervezett áremelés: {aremele_merteke}%. Írj 5 lényegre törő pontot a tulajdonosnak magyarul!"
-                
-                with st.spinner('Az AI elemzi a számokat...'):
-                    response = client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=[{"role": "user", "content": prompt}]
-                    )
-                    st.info(response.choices[0].message.content)
-            except Exception as e:
-                st.error(f"AI szolgáltatási hiba: {e}")
-        else:
-            st.error("Kérlek add meg az OpenAI API kulcsodat!")
+                prompt = f"Pékség adatok:\n{ai_data}\nÍrj rövid elemzést magyarul!"
+                response = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}])
+                st.info(response.choices[0].message.content)
+            else:
+                st.warning("Adj meg API kulcsot!")
+    else:
+        st.info("Tölts fel legalább egy CSV fájlt!")
 else:
-    st.info("Az adatbázis jelenleg üres. Tölts fel havi CSV fájlokat a bal oldali sávban!")
+    st.info("Várom a CSV fájlokat a bal oldali sávban...")
