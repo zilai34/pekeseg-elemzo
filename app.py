@@ -4,16 +4,12 @@ import plotly.express as px
 from openai import OpenAI
 import datetime
 
-# --- 1. KONFIGURÁCIÓ ---
+# --- 1. KONFIGURÁCIÓ ÉS TITKOK ---
 HIVATALOS_JELSZO = "Velencei670905" 
 st.set_page_config(page_title="Pékség Dashboard 2025", layout="wide", page_icon="🥐")
 
-# Automatikus API kulcs betöltése a Secrets-ből
-# Ha nincs beállítva, None marad, és az AI funkció rejtve marad
-try:
-    openai_api_key = st.secrets["OPENAI_API_KEY"]
-except:
-    openai_api_key = None
+# OpenAI kulcs automatikus beolvasása (Streamlit Secrets-ből)
+openai_api_key = st.secrets.get("OPENAI_API_KEY")
 
 st.markdown("""
     <style>
@@ -79,11 +75,11 @@ with st.sidebar:
     st.header("⚙️ Beállítások")
     uploaded_files = st.file_uploader("CSV fájlok feltöltése", type="csv", accept_multiple_files=True)
     
-    # Ha nincs kulcs a secrets-ben, itt még mindig megadható kézzel (biztonsági tartalék)
-    if not openai_api_key:
-        openai_api_key = st.text_input("OpenAI API Key (Kézi megadás)", type="password")
+    # Csak egy státuszjelzés, ha van kulcs
+    if openai_api_key:
+        st.success("🤖 AI Asszisztens aktív")
     else:
-        st.success("✅ OpenAI API kulcs betöltve")
+        st.info("ℹ️ AI modul inaktív (nincs API kulcs)")
 
     st.divider()
     if st.button("Kijelentkezés"):
@@ -163,7 +159,7 @@ if uploaded_files:
                 hide_index=True
             )
             
-            # AI rész csak akkor jelenik meg, ha van kulcs
+            # AI rész csak akkor, ha van kulcs
             if openai_api_key:
                 with st.expander("💬 AI Adatelemző Asszisztens"):
                     user_q = st.text_input("Kérdezz az adatokról:")
