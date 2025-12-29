@@ -8,18 +8,17 @@ import datetime
 HIVATALOS_JELSZO = "Velencei670905" 
 st.set_page_config(page_title="Pékség Dashboard 2025", layout="wide", page_icon="🥐")
 
-# Nyomtatási stílus és UI finomítás
 st.markdown("""
     <style>
     @media print {
         .stButton, .stFileUploader, [data-testid="stSidebar"], .stDownloadButton { display: none !important; }
         .main { padding: 0 !important; }
     }
-    /* Kártyák stílusa */
     div[data-testid="metric-container"] {
         background-color: #f0f2f6;
         padding: 10px;
         border-radius: 10px;
+        border: 1px solid #e0e0e0;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -47,7 +46,6 @@ def load_data(uploaded_files):
     all_dfs = []
     for file in uploaded_files:
         try:
-            # Beolvasás latin-1 kódolással és pontos elválasztókkal
             temp_df = pd.read_csv(file, sep=';', decimal=',', encoding='latin-1')
             all_dfs.append(temp_df)
         except Exception as e:
@@ -56,25 +54,24 @@ def load_data(uploaded_files):
     if not all_dfs:
         return None
     
-    # Több fájl összefűzése
     df = pd.concat(all_dfs, ignore_index=True)
-    
-    # Adattisztítás
     df['ST_CIKKSZAM'] = df['ST_CIKKSZAM'].astype(str).str.strip()
-    df = df[df['ST_CIKKSZAM'] != '146'] # Raklap szűrés
+    df = df[df['ST_CIKKSZAM'] != '146'] 
     
-    # Dátumok felismerése (többféle formátumot is kezel)
     df['SF_TELJ'] = pd.to_datetime(df['SF_TELJ'], dayfirst=True, errors='coerce')
-    df = df.dropna(subset=['SF_TELJ']) # Hibás dátumok törlése
+    df = df.dropna(subset=['SF_TELJ']) 
     
     df['Honap_Nev'] = df['SF_TELJ'].dt.strftime('%Y-%m')
     df['Kategória'] = df['ST_CIKKSZAM'].apply(lambda x: "Száraz áru" if x in SZARAZ_LISTA else "Friss áru")
+    
+    # Létrehozzuk a "Cikkszám - Terméknév" kombinált oszlopot a szűréshez
+    df['Cikkszam_Nev'] = df['ST_CIKKSZAM'] + " - " + df['ST_CIKKNEV'].astype(str)
+    
     return df
 
 # --- 4. OLDALSÁV ---
 with st.sidebar:
     st.header("⚙️ Beállítások")
-    # Több fájl kijelölése engedélyezve
     uploaded_files = st.file_uploader("CSV fájlok feltöltése", type="csv", accept_multiple_files=True)
     api_key = st.text_input("OpenAI API Key (opcionális)", type="password")
     st.divider()
@@ -82,27 +79,24 @@ with st.sidebar:
         st.session_state["bejelentkezve"] = False
         st.rerun()
 
-# --- 5. FŐOLDAL ---
+# --- 5. FŐOLDAL ÉS SZŰRŐK ---
 if uploaded_files:
     df = load_data(uploaded_files)
     
     if df is not None:
         st.title("📊 Pékség Forgalmi Jelentés")
-        
-        # --- SZŰRŐK ---
         st.subheader("🔍 Szűrési feltételek")
         
-        # 1. sor: Partner, Kategória, Cikkszám
         c1, c2, c3 = st.columns(3)
         partnerek = ["Összes partner"] + sorted(df['SF_UGYFELNEV'].unique().tolist())
         v_partner = c1.selectbox("Partner választása:", partnerek)
         
         v_kat = c2.multiselect("Kategória:", ["Friss áru", "Száraz áru"], default=["Friss áru", "Száraz áru"])
         
-        cikkszamok = sorted(df['ST_CIKKSZAM'].unique().tolist())
-        v_cikkszam = c3.multiselect("Cikkszám szerinti szűrés:", cikkszamok)
+        # Frissített cikkszám szűrő: névvel együtt jelenik meg, de sorrendben
+        cikkszam_lista = sorted(df['Cikkszam_Nev'].unique().tolist())
+        v_cikkszam_nev = c3.multiselect("Cikkszám és név szerinti szűrés:", cikkszam_lista)
         
-        # 2. sor: Naptári intervallum
         min_d = df['SF_TELJ'].min().date()
         max_d = df['SF_TELJ'].max().date()
         
@@ -118,24 +112,20 @@ if uploaded_files:
         # --- SZŰRÉS VÉGREHAJTÁSA ---
         f_df = df.copy()
         
-        # Dátum szűrés (biztonságos kezelés ha csak egy dátum van kijelölve)
         if isinstance(date_range, tuple) and len(date_range) == 2:
             start, end = date_range
             f_df = f_df[(f_df['SF_TELJ'].dt.date >= start) & (f_df['SF_TELJ'].dt.date <= end)]
         
-        # Kategória szűrés
         if v_kat:
             f_df = f_df[f_df['Kategória'].isin(v_kat)]
         
-        # Partner szűrés
         if v_partner != "Összes partner":
             f_df = f_df[f_df['SF_UGYFELNEV'] == v_partner]
             
-        # Cikkszám szűrés
-        if v_cikkszam:
-            f_df = f_df[f_df['ST_CIKKSZAM'].isin(v_cikkszam)]
+        if v_cikkszam_nev:
+            f_df = f_df[f_df['Cikkszam_Nev'].isin(v_cikkszam_nev)]
 
-        # --- 6. KPI MUTATÓK ---
+        # --- 6. KPI ÉS MEGJELENÍTÉS ---
         if not f_df.empty:
             st.divider()
             m1, m2, m3 = st.columns(3)
@@ -143,37 +133,31 @@ if uploaded_files:
             osszes_netto = f_df['ST_NEFT'].sum()
             napok = f_df['SF_TELJ'].dt.date.nunique()
             
-            m1.metric("Összes mennyiség", f"{osszes_menny:,.0f}".replace(",", " ") + " db")
+            m1.metric("Szűrt mennyiség", f"{osszes_menny:,.0f}".replace(",", " ") + " db")
             m2.metric("Nettó árbevétel", f"{osszes_netto:,.0f}".replace(",", " ") + " Ft")
             
             napi_avg = osszes_netto / napok if napok > 0 else 0
             m3.metric("Napi átlag bevétel", f"{napi_avg:,.0f}".replace(",", " ") + " Ft")
 
-            # --- 7. VIZUALIZÁCIÓ ---
             st.subheader("📈 Forgalom alakulása")
-            # Dinamikus bontás: kevés nap esetén napi, egyébként havi
             bontas = 'SF_TELJ' if napok < 45 else 'Honap_Nev'
-            
             chart_data = f_df.groupby([bontas, 'Kategória'])['ST_MENNY'].sum().reset_index()
             fig = px.bar(chart_data, x=bontas, y='ST_MENNY', color='Kategória', 
                          barmode='group', color_discrete_map={"Friss áru": "#ef553b", "Száraz áru": "#636efa"})
             st.plotly_chart(fig, use_container_width=True)
 
-            # --- 8. ADATTÁBLA ---
-            st.subheader("📋 Részletes adatok listája")
+            st.subheader("📋 Részletes adatok")
             st.dataframe(
                 f_df[['SF_TELJ', 'SF_UGYFELNEV', 'ST_CIKKSZAM', 'ST_CIKKNEV', 'ST_MENNY', 'ST_NEFT']].sort_values('SF_TELJ'), 
                 use_container_width=True,
                 hide_index=True
             )
             
-            # --- 9. AI ELEMZÉS ---
             if api_key:
-                with st.expander("💬 AI Adatelemző Asszisztens"):
-                    user_q = st.text_input("Kérdezz az adatokról (pl. Melyik partner vette a legtöbb kiflit?):")
-                    if st.button("Elemzés futtatása"):
+                with st.expander("💬 AI Elemzés"):
+                    user_q = st.text_input("Kérdezz az adatokról:")
+                    if st.button("Küldés"):
                         client = OpenAI(api_key=api_key)
-                        # Aggregált adatok küldése a tokentakarékosság miatt
                         summary = f_df.groupby(['ST_CIKKNEV'])['ST_MENNY'].sum().sort_values(ascending=False).head(15).to_string()
                         res = client.chat.completions.create(
                             model="gpt-4o",
@@ -182,7 +166,6 @@ if uploaded_files:
                         )
                         st.info(res.choices[0].message.content)
         else:
-            st.warning("⚠️ Nincs megjeleníthető adat a választott szűrőkkel. Kérlek módosítsd a feltételeket!")
-
+            st.warning("Nincs adat a választott szűrőkkel.")
 else:
-    st.info("👋 Üdvözöllek! Kérlek, töltsd fel a CSV fájlokat (akár többet is egyszerre) a bal oldali sávban a kezdéshez.")
+    st.info("👋 Töltsd fel a CSV fájlokat a kezdéshez!")
