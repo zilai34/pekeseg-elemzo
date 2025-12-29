@@ -8,6 +8,13 @@ import datetime
 HIVATALOS_JELSZO = "Velencei670905" 
 st.set_page_config(page_title="Pékség Dashboard 2025", layout="wide", page_icon="🥐")
 
+# Automatikus API kulcs betöltése a Secrets-ből
+# Ha nincs beállítva, None marad, és az AI funkció rejtve marad
+try:
+    openai_api_key = st.secrets["OPENAI_API_KEY"]
+except:
+    openai_api_key = None
+
 st.markdown("""
     <style>
     @media print {
@@ -63,8 +70,6 @@ def load_data(uploaded_files):
     
     df['Honap_Nev'] = df['SF_TELJ'].dt.strftime('%Y-%m')
     df['Kategória'] = df['ST_CIKKSZAM'].apply(lambda x: "Száraz áru" if x in SZARAZ_LISTA else "Friss áru")
-    
-    # Létrehozzuk a "Cikkszám - Terméknév" kombinált oszlopot a szűréshez
     df['Cikkszam_Nev'] = df['ST_CIKKSZAM'] + " - " + df['ST_CIKKNEV'].astype(str)
     
     return df
@@ -73,7 +78,13 @@ def load_data(uploaded_files):
 with st.sidebar:
     st.header("⚙️ Beállítások")
     uploaded_files = st.file_uploader("CSV fájlok feltöltése", type="csv", accept_multiple_files=True)
-    api_key = st.text_input("OpenAI API Key (opcionális)", type="password")
+    
+    # Ha nincs kulcs a secrets-ben, itt még mindig megadható kézzel (biztonsági tartalék)
+    if not openai_api_key:
+        openai_api_key = st.text_input("OpenAI API Key (Kézi megadás)", type="password")
+    else:
+        st.success("✅ OpenAI API kulcs betöltve")
+
     st.divider()
     if st.button("Kijelentkezés"):
         st.session_state["bejelentkezve"] = False
@@ -93,7 +104,6 @@ if uploaded_files:
         
         v_kat = c2.multiselect("Kategória:", ["Friss áru", "Száraz áru"], default=["Friss áru", "Száraz áru"])
         
-        # Frissített cikkszám szűrő: névvel együtt jelenik meg, de sorrendben
         cikkszam_lista = sorted(df['Cikkszam_Nev'].unique().tolist())
         v_cikkszam_nev = c3.multiselect("Cikkszám és név szerinti szűrés:", cikkszam_lista)
         
@@ -153,18 +163,22 @@ if uploaded_files:
                 hide_index=True
             )
             
-            if api_key:
-                with st.expander("💬 AI Elemzés"):
+            # AI rész csak akkor jelenik meg, ha van kulcs
+            if openai_api_key:
+                with st.expander("💬 AI Adatelemző Asszisztens"):
                     user_q = st.text_input("Kérdezz az adatokról:")
                     if st.button("Küldés"):
-                        client = OpenAI(api_key=api_key)
-                        summary = f_df.groupby(['ST_CIKKNEV'])['ST_MENNY'].sum().sort_values(ascending=False).head(15).to_string()
-                        res = client.chat.completions.create(
-                            model="gpt-4o",
-                            messages=[{"role": "system", "content": "Te egy pékségi üzleti elemző vagy. Válaszolj tömören."},
-                                      {"role": "user", "content": f"Adatok:\n{summary}\n\nKérdés: {user_q}"}]
-                        )
-                        st.info(res.choices[0].message.content)
+                        try:
+                            client = OpenAI(api_key=openai_api_key)
+                            summary = f_df.groupby(['ST_CIKKNEV'])['ST_MENNY'].sum().sort_values(ascending=False).head(15).to_string()
+                            res = client.chat.completions.create(
+                                model="gpt-4o",
+                                messages=[{"role": "system", "content": "Te egy pékségi üzleti elemző vagy. Válaszolj tömören."},
+                                          {"role": "user", "content": f"Adatok:\n{summary}\n\nKérdés: {user_q}"}]
+                            )
+                            st.info(res.choices[0].message.content)
+                        except Exception as e:
+                            st.error(f"AI hiba: {e}")
         else:
             st.warning("Nincs adat a választott szűrőkkel.")
 else:
