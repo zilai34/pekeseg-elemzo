@@ -6,7 +6,7 @@ import datetime
 
 # --- 1. KONFIGURÁCIÓ ÉS TITKOK ---
 HIVATALOS_JELSZO = "Velencei670905" 
-st.set_page_config(page_title="Pékség Dashboard 2025", layout="wide", page_icon="🥐")
+st.set_page_config(page_title="Pékség Dashboard AI Pro", layout="wide", page_icon="🥐")
 
 openai_api_key = st.secrets.get("OPENAI_API_KEY")
 
@@ -62,7 +62,6 @@ def load_data(uploaded_files):
     df['SF_TELJ'] = pd.to_datetime(df['SF_TELJ'], dayfirst=True, errors='coerce')
     df = df.dropna(subset=['SF_TELJ']) 
     
-    # Új időbeli oszlopok az összehasonlításhoz
     df['Év'] = df['SF_TELJ'].dt.year
     df['Hónap'] = df['SF_TELJ'].dt.month
     df['Honap_Nev'] = df['SF_TELJ'].dt.strftime('%Y-%m')
@@ -126,22 +125,22 @@ if uploaded_files:
 
             # --- 7. ÉV-ÉV ÖSSZEHASONLÍTÁS (%) ---
             st.subheader("📈 Éves összehasonlítás (YoY)")
-            
             y_tengely = st.radio("Mértékegység:", ['ST_NEFT', 'ST_MENNY'], 
                                  format_func=lambda x: "Nettó összeg (Ft)" if x=='ST_NEFT' else "Mennyiség (db)", horizontal=True)
 
             yoy_df = f_df.groupby(['Év', 'Hónap'])[y_tengely].sum().reset_index()
             pivot_yoy = yoy_df.pivot(index='Hónap', columns='Év', values=y_tengely)
             
-            available_years = sorted(pivot_yoy.columns)
+            available_years = sorted([c for c in pivot_yoy.columns if isinstance(c, int)])
+            
+            yoy_summary_for_ai = "" # Ezt adjuk majd át az AI-nak
+            
             if len(available_years) >= 2:
                 y1, y2 = available_years[-2], available_years[-1]
-                pivot_yoy['Eltérés (abszolút)'] = pivot_yoy[y2] - pivot_yoy[y1]
+                pivot_yoy['Eltérés (abs)'] = pivot_yoy[y2] - pivot_yoy[y1]
                 pivot_yoy['Eltérés (%)'] = (pivot_yoy[y2] / pivot_yoy[y1] - 1) * 100
+                yoy_summary_for_ai = pivot_yoy.to_string() # AI látni fogja a táblázatot
                 
-                st.write(f"Összehasonlítás: **{y1}** vs **{y2}**")
-                
-                # Táblázat formázása
                 def color_val(val):
                     color = '#1D8348' if val > 0 else '#C0392B'
                     return f'color: {color}; font-weight: bold'
@@ -149,46 +148,67 @@ if uploaded_files:
                 st.dataframe(
                     pivot_yoy.style.format({
                         y1: "{:,.0f}", y2: "{:,.0f}",
-                        'Eltérés (abszolút)': "{:+,.0f}",
+                        'Eltérés (abs)': "{:+,.0f}",
                         'Eltérés (%)': "{:+.1f}%"
                     }).applymap(color_val, subset=['Eltérés (%)']),
                     use_container_width=True
                 )
                 
-                # Összehasonlító grafikon
                 fig_yoy = px.bar(yoy_df, x='Hónap', y=y_tengely, color='Év', barmode='group',
-                                 title=f"Havi forgalom évenkénti összevetésben ({y1} vs {y2})",
-                                 labels={'Hónap': 'Hónap száma', y_tengely: 'Érték'})
+                                 title=f"Havi összevetés ({y1} vs {y2})")
                 fig_yoy.update_xaxes(dtick=1)
                 st.plotly_chart(fig_yoy, use_container_width=True)
             else:
-                st.info("Tölts fel több év adatait az összehasonlításhoz (pl. 2024 és 2025 CSV).")
+                st.info("Tölts fel több év adatait az összehasonlításhoz.")
 
             # --- 8. RÉSZLETEK ÉS AI ---
-            tabs = st.tabs(["📋 Részletes adatok", "🤖 AI Elemzés"])
+            tabs = st.tabs(["📋 Adatok", "🤖 AI Üzleti Asszisztens"])
             
             with tabs[0]:
                 st.dataframe(f_df[['SF_TELJ', 'SF_UGYFELNEV', 'ST_CIKKNEV', 'ST_MENNY', 'ST_NEFT']].sort_values('SF_TELJ'), use_container_width=True)
             
             with tabs[1]:
                 if openai_api_key:
-                    user_q = st.text_input("Kérdezz az AI-tól (pl. Melyik termék esett vissza legjobban?):")
+                    st.write("### 💬 Kérdezz bármit az adatokról!")
+                    user_q = st.text_input("Pl.: Melyik termék esett vissza legjobban tavalyhoz képest?")
+                    
                     if st.button("Elemzés futtatása"):
-                        try:
-                            client = OpenAI(api_key=openai_api_key)
-                            # Top termékek átadása az AI-nak
-                            summary = f_df.groupby(['ST_CIKKNEV'])['ST_NEFT'].sum().sort_values(ascending=False).head(20).to_string()
-                            res = client.chat.completions.create(
-                                model="gpt-4o",
-                                messages=[
-                                    {"role": "system", "content": "Pékségi üzleti elemző vagy. Válaszolj tömören, magyarul."},
-                                    {"role": "user", "content": f"Itt a top 20 termék forgalma:\n{summary}\n\nKérdés: {user_q}"}
-                                ]
-                            )
-                            st.info(res.choices[0].message.content)
-                        except Exception as e: st.error(f"AI hiba: {e}")
+                        with st.spinner('Az AI elemzi a forgalmat...'):
+                            try:
+                                client = OpenAI(api_key=openai_api_key)
+                                
+                                # Kontextus összeállítása: Mi mindenről tudjon az AI?
+                                top_products = f_df.groupby(['ST_CIKKNEV'])[y_tengely].sum().sort_values(ascending=False).head(15).to_string()
+                                top_customers = f_df.groupby(['SF_UGYFELNEV'])[y_tengely].sum().sort_values(ascending=False).head(10).to_string()
+                                
+                                prompt_context = f"""
+                                Te egy pékség professzionális üzleti elemzője vagy. 
+                                Itt vannak a dashboard adatai:
+                                
+                                1. Éves összehasonlító táblázat (Hónapok szerint):
+                                {yoy_summary_for_ai}
+                                
+                                2. Top 15 termék forgalma:
+                                {top_products}
+                                
+                                3. Top 10 partner:
+                                {top_customers}
+                                
+                                A felhasználó kérdése: {user_q}
+                                
+                                Kérlek, adj pontos, üzleti szemléletű választ. Ha látsz jelentős visszaesést vagy növekedést, emeld ki!
+                                """
+                                
+                                res = client.chat.completions.create(
+                                    model="gpt-4o",
+                                    messages=[
+                                        {"role": "system", "content": "Üzleti elemző vagy. Válaszolj tömören, lényegre törően."},
+                                        {"role": "user", "content": prompt_context}
+                                    ]
+                                )
+                                st.markdown("---")
+                                st.markdown(f"**AI válasza:**\n\n{res.choices[0].message.content}")
+                            except Exception as e: st.error(f"AI hiba: {e}")
                 else: st.info("Az AI-hoz API kulcs szükséges.")
-        else:
-            st.warning("Nincs adat a választott szűrőkkel.")
-else:
-    st.info("👋 Kezdéshez tölts fel CSV fájlokat (akár többet is egyszerre) a bal oldali sávban!")
+        else: st.warning("Nincs adat a választott szűrőkkel.")
+else: st.info("👋 Kezdéshez tölts fel CSV fájlokat!")
