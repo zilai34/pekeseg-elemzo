@@ -10,7 +10,7 @@ st.set_page_config(page_title="Pékség AI Pro + Visual Lab", layout="wide", pag
 
 openai_api_key = st.secrets.get("OPENAI_API_KEY")
 
-# Magyar hónapnevek szótára a helyes megjelenítéshez
+# Hónapnevek magyarosítása a vizualizációhoz
 HONAP_NEVEK = {
     1: "Január", 2: "Február", 3: "Március", 4: "Április", 5: "Május", 6: "Június",
     7: "Július", 8: "Augusztus", 9: "Szeptember", 10: "Október", 11: "November", 12: "December"
@@ -39,25 +39,22 @@ def load_data(uploaded_files):
     all_dfs = []
     for file in uploaded_files:
         try:
-            # Rugalmas beolvasás latin-1 kódolással
             temp_df = pd.read_csv(file, sep=';', decimal=',', encoding='latin-1')
             all_dfs.append(temp_df)
         except Exception as e:
             st.error(f"Hiba a(z) {file.name} fájl beolvasásakor: {e}")
     if not all_dfs: return None
     df = pd.concat(all_dfs, ignore_index=True)
-    
     df['ST_CIKKSZAM'] = df['ST_CIKKSZAM'].astype(str).str.strip()
     df['SF_TELJ'] = pd.to_datetime(df['SF_TELJ'], dayfirst=True, errors='coerce')
     df = df.dropna(subset=['SF_TELJ'])
-    
     df['Év'] = df['SF_TELJ'].dt.year
     df['Hónap_szám'] = df['SF_TELJ'].dt.month
     df['Hónap'] = df['Hónap_szám'].map(HONAP_NEVEK)
     df['Kategória'] = df['ST_CIKKSZAM'].apply(lambda x: "Száraz áru" if x in SZARAZ_LISTA else "Friss áru")
     return df
 
-# --- 4. OLDALSÁV ---
+# --- 4. OLDALSÁV ÉS ADATBETÖLTÉS ---
 with st.sidebar:
     st.header("📂 Adatforrás")
     uploaded_files = st.file_uploader("CSV fájlok feltöltése", type="csv", accept_multiple_files=True)
@@ -68,83 +65,81 @@ with st.sidebar:
 if uploaded_files:
     df = load_data(uploaded_files)
     if df is not None:
+        # --- 5. DASHBOARD FELSŐ RÉSZ (KPI) ---
         st.title("🍞 Pékség Adat-Műhely")
         
-        # --- 5. KPI SÁV ---
         m1, m2, m3 = st.columns(3)
         m1.metric("Nettó Bevétel", f"{df['ST_NEFT'].sum():,.0f} Ft")
         m2.metric("Eladott Mennyiség", f"{df['ST_MENNY'].sum():,.0f} db")
         m3.metric("Tranzakciók", f"{len(df):,.0f}")
 
-        # --- 6. HAVI ÖSSZEHASONLÍTÓ TÁBLÁZAT (2024 vs 2025) ---
+        # --- ÚJ: 6. HAVI ÖSSZEHASONLÍTÓ TÁBLÁZAT ---
         st.divider()
-        st.subheader("📊 Havi összehasonlító kimutatás")
+        st.subheader("📊 Havi összehasonlító kimutatás és eltérések")
         
-        # Létrehozzuk a táblázatot
         pivot_df = df.pivot_table(index=['Hónap_szám', 'Hónap'], columns='Év', values='ST_NEFT', aggfunc='sum').fillna(0)
-        
-        # Megnézzük, melyik évek vannak meg (pl. 2024 és 2025)
         years = sorted([c for c in pivot_df.columns if isinstance(c, int)])
         
         if len(years) >= 2:
-            y1, y2 = years[-2], years[-1] # Az utolsó két év
-            
-            # Kiszámoljuk az eltérést
+            y1, y2 = years[-2], years[-1]
             pivot_df['Eltérés (%)'] = ((pivot_df[y2] / pivot_df[y1]) - 1) * 100
-            
-            # Formázás a megjelenítéshez
             display_df = pivot_df.reset_index(level=0, drop=True)
 
             def color_diff(val):
                 color = 'green' if val > 0 else 'red'
                 return f'color: {color}; font-weight: bold'
 
-            # A táblázat megjelenítése formázva
             st.table(display_df.style.format({
-                y1: "{:,.0f} Ft",
-                y2: "{:,.0f} Ft",
-                'Eltérés (%)': "{:+.2f}%"
+                y1: "{:,.0f} Ft", y2: "{:,.0f} Ft", 'Eltérés (%)': "{:+.2f}%"
             }).applymap(color_diff, subset=['Eltérés (%)']))
 
-            # Összesen sor kiszámítása
-            sum1 = pivot_df[y1].sum()
-            sum2 = pivot_df[y2].sum()
-            total_pct = ((sum2 / sum1) - 1) * 100
-            
+            # Összesítő blokk
+            sum1, sum2 = pivot_df[y1].sum(), pivot_df[y2].sum()
+            total_diff = ((sum2 / sum1) - 1) * 100
             st.markdown(f"""
-                <div style="background-color:#f9f9f9; padding:10px; border-radius:5px; border: 1px solid #ddd;">
-                    <b>Összesen {y1}:</b> {sum1:,.0f} Ft | 
-                    <b>Összesen {y2}:</b> {sum2:,.0f} Ft | 
-                    <b>Teljes Eltérés: <span style="color:{'green' if total_pct > 0 else 'red'}">{total_pct:+.2f}%</span></b>
+                <div style="background-color:#f0f2f6; padding:20px; border-radius:10px; text-align:center; border: 1px solid #d1d5db;">
+                    <span style="font-size:18px;"><b>{y1} Összesen:</b> {sum1:,.0f} Ft  |  <b>{y2} Összesen:</b> {sum2:,.0f} Ft</span><br>
+                    <span style="font-size:22px;"><b>Teljes éves eltérés: <span style="color:{'green' if total_diff > 0 else 'red'}">{total_diff:+.2f}%</span></b></span>
                 </div>
                 """, unsafe_allow_html=True)
         else:
-            st.info("Az összehasonlításhoz tölts fel 2024 és 2025-ös adatokat is!")
+            st.info("Tölts fel több év adatait az összehasonlításhoz!")
 
-        # --- 7. AI VIZUALIZÁCIÓS LAB (A RÉGI KÓDOD ALAPJÁN) ---
+        # --- 7. AI STRATÉGA ÉS GRAFIKON GENERÁTOR (RÉGI KÓDOD ALAPJÁN) ---
         st.divider()
         st.subheader("🤖 AI Vizualizációs Lab")
-        user_q = st.text_area("Milyen elemzést vagy grafikont készítsek?", placeholder="Pl.: Melyik 5 partner hozta a legtöbb bevételt?")
+        st.info("Kérj egyedi elemzést vagy grafikont! (Pl.: 'Csinálj egy grafikont a top 5 partnerem bevételéről')")
+
+        user_q = st.text_area("Milyen elemzést készítsek?", placeholder="Pl.: Elemezd a 2024 és 2025 február közötti különbséget termékenként...")
 
         if st.button("Elemzés és Grafikon készítése") and openai_api_key:
-            with st.spinner("Az AI dolgozik..."):
+            with st.spinner("AI dolgozik az adatokon..."):
                 client = OpenAI(api_key=openai_api_key)
                 
-                # Kontextus az AI-nak
-                top_partners = df.groupby('SF_UGYFELNEV')['ST_NEFT'].sum().sort_values(ascending=False).head(15).to_dict()
-                top_products = df.groupby('ST_CIKKNEV')['ST_NEFT'].sum().sort_values(ascending=False).head(15).to_dict()
-                
+                top_partners = df.groupby('SF_UGYFELNEV')['ST_NEFT'].sum().sort_values(ascending=False).head(20).to_dict()
+                top_products = df.groupby('ST_CIKKNEV')['ST_NEFT'].sum().sort_values(ascending=False).head(20).to_dict()
+                monthly_yoy = df.groupby(['Év', 'Hónap_szám'])['ST_NEFT'].sum().unstack(level=0).to_dict()
+
                 prompt = f"""
-                Pékség üzleti elemzője vagy. Válaszolj magyarul.
+                Te egy pékség üzleti elemzője vagy. Válaszolj a kérdésre az adatok alapján magyarul.
+                
                 ADATOK:
-                Top vevők: {top_partners}
-                Top termékek: {top_products}
+                - Top partnerek: {top_partners}
+                - Top termékek: {top_products}
+                - Havi trendek: {monthly_yoy}
+                
                 KÉRDÉS: {user_q}
                 
-                SZABÁLY: Ha grafikon kell, adj meg egy 'CHART_DATA' felirat után egy JSON listát: [{"Név": "...", "Érték": 0}]
+                KÖVETELMÉNY:
+                1. Adj egy szöveges elemzést.
+                2. Ha a kérdés vizualizációra irányul, a válasz végén adj meg egy JSON blokkot 'CHART_DATA' címkével, ami egy listát tartalmaz szótárakkal (pl. [{{"Név": "Kifli", "Érték": 100}}]).
                 """
 
-                res = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}])
+                res = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[{"role": "system", "content": "Üzleti elemző vagy."}, {"role": "user", "content": prompt}]
+                )
+                
                 answer = res.choices[0].message.content
                 
                 if "CHART_DATA" in answer:
@@ -153,14 +148,21 @@ if uploaded_files:
                     st.markdown(text_part)
                     try:
                         clean_json = json_part.replace("```json", "").replace("```", "").strip()
-                        c_df = pd.DataFrame(json.loads(clean_json))
-                        fig = px.bar(c_df, x=c_df.columns[0], y=c_df.columns[1], color=c_df.columns[0], title="AI Grafikon")
+                        chart_data = json.loads(clean_json)
+                        chart_df = pd.DataFrame(chart_data)
+                        
+                        st.write("### 📈 AI által generált grafikon")
+                        cols = chart_df.columns
+                        fig = px.bar(chart_df, x=cols[0], y=cols[1], color=cols[0], title="AI Elemzés Eredménye")
                         st.plotly_chart(fig, use_container_width=True)
-                    except: st.warning("Grafikon hiba.")
-                else: st.markdown(answer)
+                    except:
+                        st.warning("A grafikont nem sikerült kirajzolni, de az elemzés elkészült.")
+                else:
+                    st.markdown(answer)
 
-        # --- 8. NYERS ADATOK ---
+        # --- 8. HAGYOMÁNYOS TÁBLÁZATOK ---
         with st.expander("📋 Nyers adatok megtekintése"):
             st.dataframe(df, use_container_width=True)
+
 else:
-    st.info("👋 Kezdéshez tölts fel CSV fájlokat!")
+    st.info("👋 Kezdéshez tölts fel CSV fájlokat a bal oldalon!")
