@@ -45,7 +45,6 @@ def load_data(uploaded_files):
     
     df = pd.concat(all_dfs, ignore_index=True)
     
-    # Szigorú tisztítás
     df['ST_CIKKSZAM'] = df['ST_CIKKSZAM'].astype(str).str.strip()
     df['ST_CIKKNEV'] = df['ST_CIKKNEV'].astype(str).str.strip()
     df['SF_UGYFELNEV'] = df['SF_UGYFELNEV'].astype(str).str.strip()
@@ -78,7 +77,6 @@ if uploaded_files:
     if df is not None:
         st.title("🥐 Pékségi Összehasonlító Dashboard")
 
-        # Cikkszám alapú összevonás a szűrőhöz és névegyesítéshez
         product_lookup = df.groupby('ST_CIKKSZAM')['ST_CIKKNEV'].first().reset_index()
         product_lookup['Display_Name'] = product_lookup['ST_CIKKSZAM'] + " - " + product_lookup['ST_CIKKNEV']
         product_options = sorted(product_lookup['Display_Name'].tolist())
@@ -143,44 +141,72 @@ if uploaded_files:
                 col5.metric("Mennyiség 'B'", f"{menny_b:,.0f} db".replace(","," "))
                 col6.metric("Mennyiség diff.", f"{(menny_a - menny_b):,.0f} db".replace(","," "))
 
-                # --- GRAFIKON SZÁZALÉKKAL ---
+                # --- GRAFIKON OPCIÓKKAL ---
                 st.divider()
-                st.subheader("📦 Termékforgalom és %-os változás (A vs B)")
+                st.subheader("📦 Termékforgalom és elemzés")
+                
+                metrika = st.radio("Válaszd ki a grafikon metrikáját:", 
+                                   ["Érték (Ft)", "Mennyiség (db)", "Átlagár (Ft/db)"], 
+                                   horizontal=True)
+                
+                # Adat előkészítés a választott metrika alapján
+                map_metrika = {
+                    "Érték (Ft)": "ST_NEFT",
+                    "Mennyiség (db)": "ST_MENNY"
+                }
 
-                df_a_sum = df_a.groupby('Cikkszam_Nev')['ST_NEFT'].sum().rename('A_Bev')
-                df_b_sum = df_b.groupby('Cikkszam_Nev')['ST_NEFT'].sum().rename('B_Bev')
-                diff_df = pd.concat([df_a_sum, df_b_sum], axis=1).fillna(0)
+                if metrika == "Átlagár (Ft/db)":
+                    def get_stats(data):
+                        g = data.groupby('Cikkszam_Nev').agg({'ST_NEFT':'sum', 'ST_MENNY':'sum'})
+                        g['Val'] = g['ST_NEFT'] / g['ST_MENNY']
+                        return g['Val'].fillna(0)
+                else:
+                    def get_stats(data):
+                        return data.groupby('Cikkszam_Nev')[map_metrika[metrika]].sum()
+
+                val_a = get_stats(df_a).rename('A_Val')
+                val_b = get_stats(df_b).rename('B_Val')
+                diff_df = pd.concat([val_a, val_b], axis=1).fillna(0)
                 
                 def calc_pct(row):
-                    if row['B_Bev'] == 0 and row['A_Bev'] > 0: return "Új"
-                    if row['B_Bev'] == 0: return ""
-                    pct = ((row['A_Bev'] - row['B_Bev']) / row['B_Bev']) * 100
+                    if row['B_Val'] == 0 and row['A_Val'] > 0: return "Új"
+                    if row['B_Val'] == 0: return ""
+                    pct = ((row['A_Val'] - row['B_Val']) / row['B_Val']) * 100
                     return f"{'+' if pct > 0 else ''}{pct:.1f}%"
                 
                 diff_df['Pct'] = diff_df.apply(calc_pct, axis=1)
 
-                plot_data = df_combined.groupby(['Cikkszam_Nev', 'Időszak'])['ST_NEFT'].sum().reset_index()
-                plot_data = plot_data.merge(diff_df[['Pct']], on='Cikkszam_Nev', how='left')
-                plot_data['Label'] = plot_data.apply(lambda x: x['Pct'] if x['Időszak'] == 'A' else "", axis=1)
+                # Plotly adatok újraépítése a metrikához
+                if metrika == "Átlagár (Ft/db)":
+                    plot_data = diff_df.reset_index().melt(id_vars=['Cikkszam_Nev', 'Pct'], 
+                                                          value_vars=['A_Val', 'B_Val'], 
+                                                          var_name='Időszak', value_name='Mertek')
+                    plot_data['Időszak'] = plot_data['Időszak'].str.replace('_Val', '')
+                else:
+                    plot_data = df_combined.groupby(['Cikkszam_Nev', 'Időszak'])[map_metrika[metrika]].sum().reset_index()
+                    plot_data.rename(columns={map_metrika[metrika]: 'Mertek'}, inplace=True)
+                    plot_data = plot_data.merge(diff_df[['Pct']], on='Cikkszam_Nev', how='left')
 
-                sorrend = plot_data.groupby('Cikkszam_Nev')['ST_NEFT'].sum().sort_values(ascending=True).index
+                plot_data['Label'] = plot_data.apply(lambda x: x['Pct'] if x['Időszak'] == 'A' else "", axis=1)
+                sorrend = plot_data.groupby('Cikkszam_Nev')['Mertek'].sum().sort_values(ascending=True).index
+
                 fig = px.bar(
-                    plot_data, x='ST_NEFT', y='Cikkszam_Nev', color='Időszak', 
+                    plot_data, x='Mertek', y='Cikkszam_Nev', color='Időszak', 
                     barmode='group', orientation='h', text='Label',
                     category_orders={"Cikkszam_Nev": list(sorrend)},
                     height=max(400, len(sorrend) * 35),
-                    color_discrete_map={'A': '#1f77b4', 'B': '#aec7e8'}
+                    color_discrete_map={'A': '#1f77b4', 'B': '#aec7e8'},
+                    labels={'Mertek': metrika, 'Cikkszam_Nev': 'Termék'}
                 )
                 fig.update_traces(textposition='outside')
                 st.plotly_chart(fig, use_container_width=True)
 
                 # --- TÁBLÁZAT ---
                 st.divider()
-                st.subheader("📋 Összevont tranzakciós lista (A és B)")
+                st.subheader("📋 Összevont tranzakciós lista")
                 st.dataframe(df_combined[['Időszak', 'Datum_Csak', 'SF_UGYFELNEV', 'Cikkszam_Nev', 'ST_MENNY', 'ST_NEFT']].sort_values(['Datum_Csak', 'Időszak']), use_container_width=True)
 
             else:
-                # Csak 'A' időszak nézet
                 st.subheader("📈 'A' időszak adatai")
                 st.metric("Bevétel", f"{df_a['ST_NEFT'].sum():,.0f} Ft".replace(","," "))
                 st.dataframe(df_a[['Datum_Csak', 'SF_UGYFELNEV', 'Cikkszam_Nev', 'ST_MENNY', 'ST_NEFT']], use_container_width=True)
