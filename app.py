@@ -1,88 +1,108 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 from openai import OpenAI
-import json
 
-# --- 1. KONFIGURÁCIÓ ---
-HIVATALOS_JELSZO = "Velencei670905" 
-st.set_page_config(page_title="Pékség Dashboard AI Pro", layout="wide", page_icon="🥐")
+# --- KONFIGURÁCIÓ ---
+st.set_page_config(page_title="Pékség Forgalmi Elemző", layout="wide")
 
-openai_api_key = st.secrets.get("OPENAI_API_KEY")
+# Sidebar - Beállítások
+st.sidebar.header("Beállítások")
+api_key = st.sidebar.text_input("OpenAI API Key", type="password")
+client = OpenAI(api_key=api_key) if api_key else None
 
-st.markdown("""
-    <style>
-    div[data-testid="metric-container"] {
-        background-color: #f0f2f6;
-        padding: 15px;
-        border-radius: 10px;
-        border: 1px solid #e0e0e0;
-    }
-    </style>
-""", unsafe_allow_html=True)
+st.title("📊 Profi Áruforgalmi Dashboard")
 
-# --- 2. ADATKEZELÉS ---
+# --- SZABÁLYOK ---
 SZARAZ_LISTA = ['509496007', '509500001', '509502005', '524145003', '524149001']
+GONGYOLEG_CIKKSZAM = '146' # EUR Raklap - Ezt töröljük
 
-@st.cache_data
-def load_data(uploaded_files):
-    all_dfs = []
-    for file in uploaded_files:
-        try:
-            # Megjegyzés: sep=';' és latin-1 kódolás a magyar Excel/CSV fájlokhoz
-            temp_df = pd.read_csv(file, sep=';', decimal=',', encoding='latin-1')
-            all_dfs.append(temp_df)
-        except Exception as e:
-            st.error(f"Hiba a(z) {file.name} fájl beolvasásakor: {e}")
-    if not all_dfs: return None
+# --- ADATFELDOLGOZÁS ---
+uploaded_file = st.sidebar.file_uploader("Töltsd fel a CSV fájlt", type="csv")
+
+if uploaded_file:
+    # Beolvasás
+    df = pd.read_csv(uploaded_file, sep=';', decimal=',', encoding='utf-8')
     
-    df = pd.concat(all_dfs, ignore_index=True)
-    df['ST_CIKKSZAM'] = df['ST_CIKKSZAM'].astype(str).str.strip()
-    df = df[df['ST_CIKKSZAM'] != '146'] 
-    df['SF_TELJ'] = pd.to_datetime(df['SF_TELJ'], dayfirst=True, errors='coerce')
-    df = df.dropna(subset=['SF_TELJ']) 
-    df['Év'] = df['SF_TELJ'].dt.year
-    df['Hónap'] = df['SF_TELJ'].dt.month
-    df['Honap_Nev'] = df['SF_TELJ'].dt.strftime('%Y-%m')
-    df['Kategória'] = df['ST_CIKKSZAM'].apply(lambda x: "Száraz áru" if x in SZARAZ_LISTA else "Friss áru")
-    df['Cikkszam_Nev'] = df['ST_CIKKSZAM'] + " - " + df['ST_CIKKNEV'].astype(str)
-    return df
+    # 1. SZŰRÉS: Raklap eltávolítása (ne szerepeljen sehol)
+    df = df[df['ST_CIKKSZAM'].astype(str).str.strip() != GONGYOLEG_CIKKSZAM]
+    
+    # 2. Dátumok és Kategóriák
+    df['SF_TELJ'] = pd.to_datetime(df['SF_TELJ'])
+    df['Honap'] = df['SF_TELJ'].dt.strftime('%Y-%m')
+    
+    def kategorizal(c):
+        return "Száraz áru" if str(c).strip() in SZARAZ_LISTA else "Friss áru"
+    
+    df['Kategória'] = df['ST_CIKKSZAM'].apply(kategorizal)
 
-# --- 3. BEJELENTKEZÉS ---
-if "bejelentkezve" not in st.session_state:
-    st.session_state["bejelentkezve"] = False
+    # --- SZŰRŐK ---
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        partner = st.selectbox("Partner:", ["Mindenki"] + sorted(df['SF_UGYFELNEV'].unique().tolist()))
+    with col2:
+        kat_szuro = st.multiselect("Kategória:", ["Friss áru", "Száraz áru"], default=["Friss áru", "Száraz áru"])
+    with col3:
+        # Időszak választó (év/hónap alapján)
+        időszakok = sorted(df['Honap'].unique().tolist())
+        valasztott_ido = st.select_slider("Időszak tartomány:", options=időszakok, value=(időszakok[0], időszakok[-1]))
 
-if not st.session_state["bejelentkezve"]:
-    st.title("🔐 Bejelentkezés")
-    with st.form("login_form"):
-        bevitt_jelszo = st.text_input("Jelszó:", type="password")
-        submit_button = st.form_submit_button("Belépés")
-        if submit_button:
-            if bevitt_jelszo == HIVATALOS_JELSZO:
-                st.session_state["bejelentkezve"] = True
-                st.rerun()
-            else:
-                st.error("Hibás jelszó!")
-    st.stop()
+    # Szűrt adatok létrehozása
+    mask = (df['Kategória'].isin(kat_szuro)) & (df['Honap'] >= valasztott_ido[0]) & (df['Honap'] <= valasztott_ido[1])
+    if partner != "Mindenki":
+        mask &= (df['SF_UGYFELNEV'] == partner)
+    
+    f_df = df[mask]
 
-# --- 4. OLDALSÁV ---
-with st.sidebar:
-    st.header("⚙️ Beállítások")
-    uploaded_files = st.file_uploader("CSV fájlok feltöltése", type="csv", accept_multiple_files=True)
-    if st.button("Kijelentkezés"):
-        st.session_state["bejelentkezve"] = False
-        st.rerun()
+    # --- KPI MUTATÓK ---
+    m1, m2, m3 = st.columns(3)
+    total_db = f_df['ST_MENNY'].sum()
+    total_ft = f_df['ST_NEFT'].sum()
+    
+    m1.metric("Összes mennyiség", f"{total_db:,.0f} db".replace(",", " "))
+    m2.metric("Nettó Forgalom", f"{total_ft:,.0f} Ft".replace(",", " "))
+    
+    # Előző hónap összehasonlítása (Trend)
+    monthly = f_df.groupby('Honap')['ST_MENNY'].sum()
+    if len(monthly) > 1:
+        valtozas = ((monthly.iloc[-1] / monthly.iloc[-2]) - 1) * 100
+        m3.metric("Havi trend (utolsó vs előző)", f"{valtozas:+.1f}%")
 
-# --- 5. FŐOLDAL ---
-if uploaded_files:
-    df = load_data(uploaded_files)
-    if df is not None:
-        st.title("📊 Pékség Dashboard & AI Stratégiai Műhely")
+    # --- VIZUALIZÁCIÓ ---
+    st.divider()
+    tab1, tab2 = st.tabs(["📊 Grafikonok", "📋 Nyers adatok"])
+    
+    with tab1:
+        # Havi bontású oszlopdiagram
+        chart_data = f_df.groupby(['Honap', 'Kategória'])['ST_MENNY'].sum().reset_index()
+        fig = px.bar(chart_data, x='Honap', y='ST_MENNY', color='Kategória', barmode='group',
+                     title="Forgalom alakulása (db)", template="plotly_white")
+        st.plotly_chart(fig, use_container_width=True)
         
-        with st.expander("🔍 Szűrés és Összehasonlítás", expanded=True):
-            c1, c2, c3 = st.columns(3)
-            v_partner = c1.selectbox("Partner:", ["Összes partner"] + sorted(df['SF_UGYFELNEV'].unique().tolist()))
-            v_kat = c2.multiselect("Kategória:", ["Friss áru", "Száraz áru"], default=["Friss áru", "Száraz áru"])
-            v_cikkszam_nev = c3.multiselect("Termékek kiválasztása:", sorted(df['Cikkszam_Nev'].unique().tolist()))
-            date_range = st.date_input("Időszak:", value=(df['SF_TELJ'].min().date(), df['SF_
+        # Termékenkénti toplista
+        st.subheader("Top 10 termék (mennyiség szerint)")
+        top_products = f_df.groupby('ST_CIKKNEV')['ST_MENNY'].sum().sort_values(ascending=False).head(10).reset_index()
+        fig2 = px.bar(top_products, x='ST_MENNY', y='ST_CIKKNEV', orientation='h', color='ST_MENNY')
+        st.plotly_chart(fig2, use_container_width=True)
+
+    with tab2:
+        st.dataframe(f_df[['SF_TELJ', 'SF_UGYFELNEV', 'ST_CIKKNEV', 'Kategória', 'ST_MENNY', 'ST_NEFT']])
+
+    # --- AI ELEMZÉS ---
+    st.divider()
+    if st.button("🤖 AI Üzleti jelentés készítése"):
+        if client:
+            with st.spinner("A GPT-4o elemzi az adatokat..."):
+                stats_text = f_df.groupby(['Honap', 'Kategória'])['ST_MENNY'].sum().to_string()
+                prompt = f"Elemezd a pékség adatait: {stats_text}. Szempontok: trendek, friss-száraz arány, jövőbeli növekedési javaslat."
+                res = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}])
+                st.success(res.choices[0].message.content)
+        else:
+            st.warning("Adj meg API kulcsot az AI-hoz!")
+
+    # Letöltés
+    csv = f_df.to_csv(index=False, sep=';').encode('utf-8')
+    st.download_button("Exportálás CSV-be", csv, "pekség_elemzes.csv", "text/csv")
+
+else:
+    st.info("Töltsd fel a CSV-t a kezdéshez!")
