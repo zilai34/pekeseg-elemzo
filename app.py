@@ -45,7 +45,7 @@ def load_data(uploaded_files):
     
     df = pd.concat(all_dfs, ignore_index=True)
     
-    # Szigorú tisztítás a duplikációk ellen
+    # Szigorú tisztítás
     df['ST_CIKKSZAM'] = df['ST_CIKKSZAM'].astype(str).str.strip()
     df['ST_CIKKNEV'] = df['ST_CIKKNEV'].astype(str).str.strip()
     df['SF_UGYFELNEV'] = df['SF_UGYFELNEV'].astype(str).str.strip()
@@ -58,7 +58,6 @@ def load_data(uploaded_files):
     
     df['Kategória'] = df['ST_CIKKSZAM'].apply(lambda x: "Száraz áru" if x in SZARAZ_LISTA else "Friss áru")
     
-    # Numerikus adatok
     df['ST_NEFT'] = pd.to_numeric(df['ST_NEFT'], errors='coerce').fillna(0)
     df['ST_MENNY'] = pd.to_numeric(df['ST_MENNY'], errors='coerce').fillna(0)
     
@@ -79,8 +78,7 @@ if uploaded_files:
     if df is not None:
         st.title("🥐 Pékségi Összehasonlító Dashboard")
 
-        # --- EGYEDI CIKKSZÁM LISTA ELŐKÉSZÍTÉSE (Összevonás) ---
-        # Cikkszám szerint csoportosítunk, és vesszük az első előforduló nevet
+        # Cikkszám alapú összevonás a szűrőhöz és névegyesítéshez
         product_lookup = df.groupby('ST_CIKKSZAM')['ST_CIKKNEV'].first().reset_index()
         product_lookup['Display_Name'] = product_lookup['ST_CIKKSZAM'] + " - " + product_lookup['ST_CIKKNEV']
         product_options = sorted(product_lookup['Display_Name'].tolist())
@@ -91,7 +89,7 @@ if uploaded_files:
             min_d, max_d = df['Datum_Csak'].min(), df['Datum_Csak'].max()
             
             range_a = c1.date_input("'A' időszak (Alap):", [min_d, max_d])
-            osszehasonlitas_be = c2.checkbox("Összehasonlítás egy másik időszakkal ('B')", value=False)
+            osszehasonlitas_be = c2.checkbox("Összehasonlítás egy másik időszakkal ('B')", value=True)
             
             if osszehasonlitas_be:
                 range_b = c2.date_input("'B' időszak (Összevetés):", [min_d, max_d])
@@ -100,14 +98,9 @@ if uploaded_files:
 
             st.divider()
             c3, c4, c5 = st.columns(3)
-            
             v_kat = c3.multiselect("Kategória:", ["Friss áru", "Száraz áru"], ["Friss áru", "Száraz áru"])
             v_partnerek = c4.multiselect("Partnerek:", sorted(list(set(df['SF_UGYFELNEV']))))
-            
-            # Itt használjuk az összevont listát
             v_termek_nevek = c5.multiselect("Termékek (Cikkszám - Név):", options=product_options)
-            
-            # Visszakeressük a kiválasztott cikkszámokat
             v_cikkszamok = [name.split(" - ")[0] for name in v_termek_nevek]
 
         # --- SZŰRÉSI FÜGGVÉNY ---
@@ -120,73 +113,78 @@ if uploaded_files:
             if v_partnerek: res = res[res['SF_UGYFELNEV'].isin(v_partnerek)]
             if v_cikkszamok: res = res[res['ST_CIKKSZAM'].isin(v_cikkszamok)]
             res['Időszak'] = period_label
-            # Létrehozzuk a Cikkszam_Nev oszlopot az egységes névvel a grafikonhoz
             res['Cikkszam_Nev'] = res['ST_CIKKSZAM'].map(product_lookup.set_index('ST_CIKKSZAM')['Display_Name'])
             return res
 
         df_a = filter_data(df, range_a, 'A')
 
-        # --- MEGJELENÍTÉS ---
         if not df_a.empty:
             if osszehasonlitas_be and range_b:
                 df_b = filter_data(df, range_b, 'B')
                 df_combined = pd.concat([df_a, df_b])
                 
-                # KPI-K
+                # --- KPI SZAKASZ ---
                 st.subheader("📊 Időszakok összevetése (A vs B)")
-                m1, m2, m3 = st.columns(3)
                 bev_a, bev_b = df_a['ST_NEFT'].sum(), df_b['ST_NEFT'].sum()
                 menny_a, menny_b = df_a['ST_MENNY'].sum(), df_b['ST_MENNY'].sum()
                 
                 def get_delta(a, b):
                     if b == 0: return "0%"
-                    return f"{((a - b) / b) * 100:.1f}%"
+                    pct = ((a - b) / b) * 100
+                    return f"{'+' if pct > 0 else ''}{pct:.1f}%"
 
-                m1.metric("Nettó Bevétel (A)", f"{bev_a:,.0f} Ft".replace(","," "), delta=get_delta(bev_a, bev_b))
-                m2.metric("Mennyiség (A)", f"{menny_a:,.0f} db".replace(","," "), delta=get_delta(menny_a, menny_b))
-                m3.metric("Bevétel különbség (A-B)", f"{(bev_a - bev_b):,.0f} Ft".replace(","," "))
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Bevétel 'A'", f"{bev_a:,.0f} Ft".replace(","," "), delta=get_delta(bev_a, bev_b))
+                col2.metric("Bevétel 'B'", f"{bev_b:,.0f} Ft".replace(","," "))
+                col3.metric("Bevétel diff.", f"{(bev_a - bev_b):,.0f} Ft".replace(","," "))
 
-                # DINAMIKUS MAGASSÁGÚ GRAFIKON
+                col4, col5, col6 = st.columns(3)
+                col4.metric("Mennyiség 'A'", f"{menny_a:,.0f} db".replace(","," "), delta=get_delta(menny_a, menny_b))
+                col5.metric("Mennyiség 'B'", f"{menny_b:,.0f} db".replace(","," "))
+                col6.metric("Mennyiség diff.", f"{(menny_a - menny_b):,.0f} db".replace(","," "))
+
+                # --- GRAFIKON SZÁZALÉKKAL ---
                 st.divider()
-                st.subheader("📦 Termékforgalom összevont cikkszámok alapján (A vs B)")
-                
-                plot_data = df_combined.groupby(['Cikkszam_Nev', 'Időszak'])['ST_NEFT'].sum().reset_index()
-                sorrend = plot_data.groupby('Cikkszam_Nev')['ST_NEFT'].sum().sort_values(ascending=True).index
-                chart_height = max(400, len(sorrend) * 30)
+                st.subheader("📦 Termékforgalom és %-os változás (A vs B)")
 
+                df_a_sum = df_a.groupby('Cikkszam_Nev')['ST_NEFT'].sum().rename('A_Bev')
+                df_b_sum = df_b.groupby('Cikkszam_Nev')['ST_NEFT'].sum().rename('B_Bev')
+                diff_df = pd.concat([df_a_sum, df_b_sum], axis=1).fillna(0)
+                
+                def calc_pct(row):
+                    if row['B_Bev'] == 0 and row['A_Bev'] > 0: return "Új"
+                    if row['B_Bev'] == 0: return ""
+                    pct = ((row['A_Bev'] - row['B_Bev']) / row['B_Bev']) * 100
+                    return f"{'+' if pct > 0 else ''}{pct:.1f}%"
+                
+                diff_df['Pct'] = diff_df.apply(calc_pct, axis=1)
+
+                plot_data = df_combined.groupby(['Cikkszam_Nev', 'Időszak'])['ST_NEFT'].sum().reset_index()
+                plot_data = plot_data.merge(diff_df[['Pct']], on='Cikkszam_Nev', how='left')
+                plot_data['Label'] = plot_data.apply(lambda x: x['Pct'] if x['Időszak'] == 'A' else "", axis=1)
+
+                sorrend = plot_data.groupby('Cikkszam_Nev')['ST_NEFT'].sum().sort_values(ascending=True).index
                 fig = px.bar(
                     plot_data, x='ST_NEFT', y='Cikkszam_Nev', color='Időszak', 
-                    barmode='group', orientation='h',
+                    barmode='group', orientation='h', text='Label',
                     category_orders={"Cikkszam_Nev": list(sorrend)},
-                    height=chart_height,
-                    color_discrete_map={'A': '#1f77b4', 'B': '#aec7e8'},
-                    labels={'ST_NEFT': 'Nettó árbevétel (Ft)', 'Cikkszam_Nev': 'Termék (Cikkszám alapján összevont)'}
+                    height=max(400, len(sorrend) * 35),
+                    color_discrete_map={'A': '#1f77b4', 'B': '#aec7e8'}
                 )
+                fig.update_traces(textposition='outside')
                 st.plotly_chart(fig, use_container_width=True)
 
-                # TÁBLÁZAT
+                # --- TÁBLÁZAT ---
                 st.divider()
-                st.subheader("📋 Összevont tranzakciós lista")
-                st.dataframe(
-                    df_combined[['Időszak', 'Datum_Csak', 'SF_UGYFELNEV', 'Cikkszam_Nev', 'ST_MENNY', 'ST_NEFT']]
-                    .sort_values(['Datum_Csak', 'Időszak']), 
-                    use_container_width=True
-                )
+                st.subheader("📋 Összevont tranzakciós lista (A és B)")
+                st.dataframe(df_combined[['Időszak', 'Datum_Csak', 'SF_UGYFELNEV', 'Cikkszam_Nev', 'ST_MENNY', 'ST_NEFT']].sort_values(['Datum_Csak', 'Időszak']), use_container_width=True)
 
             else:
-                # Sima nézet csak 'A' időszakkal
+                # Csak 'A' időszak nézet
                 st.subheader("📈 'A' időszak adatai")
-                k1, k2 = st.columns(2)
-                k1.metric("Bevétel", f"{df_a['ST_NEFT'].sum():,.0f} Ft".replace(","," "))
-                k2.metric("Mennyiség", f"{df_a['ST_MENNY'].sum():,.0f} db".replace(","," "))
-                
-                single_plot = df_a.groupby('Cikkszam_Nev')['ST_NEFT'].sum().reset_index().sort_values('ST_NEFT', ascending=True)
-                fig_single = px.bar(single_plot, x='ST_NEFT', y='Cikkszam_Nev', orientation='h', 
-                                   height=max(400, len(single_plot)*25), title="Összevont terméklista")
-                st.plotly_chart(fig_single, use_container_width=True)
-                
+                st.metric("Bevétel", f"{df_a['ST_NEFT'].sum():,.0f} Ft".replace(","," "))
                 st.dataframe(df_a[['Datum_Csak', 'SF_UGYFELNEV', 'Cikkszam_Nev', 'ST_MENNY', 'ST_NEFT']], use_container_width=True)
         else:
-            st.warning("⚠️ Nincs adat az 'A' időszakra.")
+            st.warning("⚠️ Nincs adat a szűrők alapján.")
 else:
-    st.info("👋 Töltsd fel a CSV fájlokat a kezdéshez!")
+    st.info("👋 Töltsd fel a CSV fájlokat!")
