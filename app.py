@@ -10,12 +10,6 @@ st.set_page_config(page_title="Pékség AI Pro + Visual Lab", layout="wide", pag
 
 openai_api_key = st.secrets.get("OPENAI_API_KEY")
 
-# Hónapnevek magyarosítása a vizualizációhoz
-HONAP_NEVEK = {
-    1: "Január", 2: "Február", 3: "Március", 4: "Április", 5: "Május", 6: "Június",
-    7: "Július", 8: "Augusztus", 9: "Szeptember", 10: "Október", 11: "November", 12: "December"
-}
-
 # --- 2. BELÉPÉS ---
 if "bejelentkezve" not in st.session_state:
     st.session_state["bejelentkezve"] = False
@@ -49,8 +43,7 @@ def load_data(uploaded_files):
     df['SF_TELJ'] = pd.to_datetime(df['SF_TELJ'], dayfirst=True, errors='coerce')
     df = df.dropna(subset=['SF_TELJ'])
     df['Év'] = df['SF_TELJ'].dt.year
-    df['Hónap_szám'] = df['SF_TELJ'].dt.month
-    df['Hónap'] = df['Hónap_szám'].map(HONAP_NEVEK)
+    df['Hónap'] = df['SF_TELJ'].dt.month
     df['Kategória'] = df['ST_CIKKSZAM'].apply(lambda x: "Száraz áru" if x in SZARAZ_LISTA else "Friss áru")
     return df
 
@@ -73,39 +66,7 @@ if uploaded_files:
         m2.metric("Eladott Mennyiség", f"{df['ST_MENNY'].sum():,.0f} db")
         m3.metric("Tranzakciók", f"{len(df):,.0f}")
 
-        # --- ÚJ: 6. HAVI ÖSSZEHASONLÍTÓ TÁBLÁZAT ---
-        st.divider()
-        st.subheader("📊 Havi összehasonlító kimutatás és eltérések")
-        
-        pivot_df = df.pivot_table(index=['Hónap_szám', 'Hónap'], columns='Év', values='ST_NEFT', aggfunc='sum').fillna(0)
-        years = sorted([c for c in pivot_df.columns if isinstance(c, int)])
-        
-        if len(years) >= 2:
-            y1, y2 = years[-2], years[-1]
-            pivot_df['Eltérés (%)'] = ((pivot_df[y2] / pivot_df[y1]) - 1) * 100
-            display_df = pivot_df.reset_index(level=0, drop=True)
-
-            def color_diff(val):
-                color = 'green' if val > 0 else 'red'
-                return f'color: {color}; font-weight: bold'
-
-            st.table(display_df.style.format({
-                y1: "{:,.0f} Ft", y2: "{:,.0f} Ft", 'Eltérés (%)': "{:+.2f}%"
-            }).applymap(color_diff, subset=['Eltérés (%)']))
-
-            # Összesítő blokk
-            sum1, sum2 = pivot_df[y1].sum(), pivot_df[y2].sum()
-            total_diff = ((sum2 / sum1) - 1) * 100
-            st.markdown(f"""
-                <div style="background-color:#f0f2f6; padding:20px; border-radius:10px; text-align:center; border: 1px solid #d1d5db;">
-                    <span style="font-size:18px;"><b>{y1} Összesen:</b> {sum1:,.0f} Ft  |  <b>{y2} Összesen:</b> {sum2:,.0f} Ft</span><br>
-                    <span style="font-size:22px;"><b>Teljes éves eltérés: <span style="color:{'green' if total_diff > 0 else 'red'}">{total_diff:+.2f}%</span></b></span>
-                </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.info("Tölts fel több év adatait az összehasonlításhoz!")
-
-        # --- 7. AI STRATÉGA ÉS GRAFIKON GENERÁTOR (RÉGI KÓDOD ALAPJÁN) ---
+        # --- 6. AI STRATÉGA ÉS GRAFIKON GENERÁTOR ---
         st.divider()
         st.subheader("🤖 AI Vizualizációs Lab")
         st.info("Kérj egyedi elemzést vagy grafikont! (Pl.: 'Csinálj egy grafikont a top 5 partnerem bevételéről')")
@@ -116,12 +77,14 @@ if uploaded_files:
             with st.spinner("AI dolgozik az adatokon..."):
                 client = OpenAI(api_key=openai_api_key)
                 
+                # AI KONTEXTUS (Mély betekintés)
+                # Összegzett adatok előkészítése, hogy ne lépjük túl a token limitet
                 top_partners = df.groupby('SF_UGYFELNEV')['ST_NEFT'].sum().sort_values(ascending=False).head(20).to_dict()
                 top_products = df.groupby('ST_CIKKNEV')['ST_NEFT'].sum().sort_values(ascending=False).head(20).to_dict()
-                monthly_yoy = df.groupby(['Év', 'Hónap_szám'])['ST_NEFT'].sum().unstack(level=0).to_dict()
+                monthly_yoy = df.groupby(['Év', 'Hónap'])['ST_NEFT'].sum().unstack(level=0).to_dict()
 
                 prompt = f"""
-                Te egy pékség üzleti elemzője vagy. Válaszolj a kérdésre az adatok alapján magyarul.
+                Te egy pékség üzleti elemzője vagy. Válaszolj a kérdésre az adatok alapján.
                 
                 ADATOK:
                 - Top partnerek: {top_partners}
@@ -142,15 +105,20 @@ if uploaded_files:
                 
                 answer = res.choices[0].message.content
                 
+                # Válasz kettéválasztása (szöveg + esetleges grafikon adat)
                 if "CHART_DATA" in answer:
                     text_part = answer.split("CHART_DATA")[0]
                     json_part = answer.split("CHART_DATA")[1].strip()
+                    
                     st.markdown(text_part)
+                    
                     try:
+                        # Próbáljuk meg kinyerni a JSON-t (megtisztítva a markdown jelektől)
                         clean_json = json_part.replace("```json", "").replace("```", "").strip()
                         chart_data = json.loads(clean_json)
                         chart_df = pd.DataFrame(chart_data)
                         
+                        # Automatikus grafikon rajzolás
                         st.write("### 📈 AI által generált grafikon")
                         cols = chart_df.columns
                         fig = px.bar(chart_df, x=cols[0], y=cols[1], color=cols[0], title="AI Elemzés Eredménye")
@@ -160,7 +128,7 @@ if uploaded_files:
                 else:
                     st.markdown(answer)
 
-        # --- 8. HAGYOMÁNYOS TÁBLÁZATOK ---
+        # --- 7. HAGYOMÁNYOS TÁBLÁZATOK ---
         with st.expander("📋 Nyers adatok megtekintése"):
             st.dataframe(df, use_container_width=True)
 
