@@ -5,12 +5,20 @@ from openai import OpenAI
 import json
 
 # --- 1. ALAPBEÁLLÍTÁSOK ---
+# [cite_start]A jelszó és az oldal alapbeállításai a megadott kód alapján [cite: 1]
 HIVATALOS_JELSZO = "Velencei670905"
 st.set_page_config(page_title="Pékség AI Pro + Visual Lab", layout="wide", page_icon="📊")
 
 openai_api_key = st.secrets.get("OPENAI_API_KEY")
 
+# Hónapnevek magyarosítása a vizualizációhoz
+HONAP_NEVEK = {
+    1: "Január", 2: "Február", 3: "Március", 4: "Április", 5: "Május", 6: "Június",
+    7: "Július", 8: "Augusztus", 9: "Szeptember", 10: "Október", 11: "November", 12: "December"
+}
+
 # --- 2. BELÉPÉS ---
+# [cite_start]Munkamenet alapú beléptető rendszer [cite: 1, 2]
 if "bejelentkezve" not in st.session_state:
     st.session_state["bejelentkezve"] = False
 
@@ -25,134 +33,106 @@ if not st.session_state["bejelentkezve"]:
             else: st.error("Hibás jelszó!")
     st.stop()
 
-# --- 3. ADATKEZELÉS ÉS HÓNAP NEVEK ---
-HONAP_NEVEK = {
-    1: "Január", 2: "Február", 3: "Március", 4: "Április", 5: "Május", 6: "Június",
-    7: "Július", 8: "Augusztus", 9: "Szeptember", 10: "Október", 11: "November", 12: "December"
-}
+# --- 3. ADATKEZELÉS ---
+[cite_start]SZARAZ_LISTA = ['509496007', '509500001', '509502005', '524145003', '524149001'] [cite: 2]
 
 @st.cache_data
 def load_data(uploaded_files):
     all_dfs = []
     for file in uploaded_files:
         try:
-            # Rugalmas beolvasás latin-1 kódolással a magyar ékezetekhez
+            # [cite_start]CSV fájlok beolvasása a megadott kód szerint [cite: 2, 3]
             temp_df = pd.read_csv(file, sep=';', decimal=',', encoding='latin-1')
             all_dfs.append(temp_df)
         except Exception as e:
             st.error(f"Hiba a(z) {file.name} fájl beolvasásakor: {e}")
-    
     if not all_dfs: return None
     df = pd.concat(all_dfs, ignore_index=True)
-    
-    # Időpontok konvertálása és kiegészítő oszlopok
-    df['SF_TELJ'] = pd.to_datetime(df['SF_TELJ'], dayfirst=True, errors='coerce')
-    df = df.dropna(subset=['SF_TELJ'])
-    df['Év'] = df['SF_TELJ'].dt.year
+    [cite_start]df['ST_CIKKSZAM'] = df['ST_CIKKSZAM'].astype(str).str.strip() [cite: 3]
+    [cite_start]df['SF_TELJ'] = pd.to_datetime(df['SF_TELJ'], dayfirst=True, errors='coerce') [cite: 3]
+    [cite_start]df = df.dropna(subset=['SF_TELJ']) [cite: 3]
+    [cite_start]df['Év'] = df['SF_TELJ'].dt.year [cite: 3]
     df['Hónap_szám'] = df['SF_TELJ'].dt.month
     df['Hónap'] = df['Hónap_szám'].map(HONAP_NEVEK)
-    
+    [cite_start]df['Kategória'] = df['ST_CIKKSZAM'].apply(lambda x: "Száraz áru" if x in SZARAZ_LISTA else "Friss áru") [cite: 3]
     return df
 
-# --- 4. OLDALSÁV ---
+# --- 4. OLDALSÁV ÉS ADATBETÖLTÉS ---
 with st.sidebar:
     st.header("📂 Adatforrás")
-    uploaded_files = st.file_uploader("CSV fájlok feltöltése", type="csv", accept_multiple_files=True)
+    [cite_start]uploaded_files = st.file_uploader("CSV fájlok feltöltése", type="csv", accept_multiple_files=True) [cite: 4]
     if st.button("Kijelentkezés"):
         st.session_state["bejelentkezve"] = False
         st.rerun()
 
-# --- 5. DASHBOARD MEGJELENÍTÉS ---
 if uploaded_files:
     df = load_data(uploaded_files)
     if df is not None:
+        # --- 5. DASHBOARD FELSŐ RÉSZ (KPI) ---
         st.title("🍞 Pékség Adat-Műhely")
         
-        # --- 6. HAVI ÖSSZEHASONLÍTÓ TÁBLÁZAT ---
+        [cite_start]m1, m2, m3 = st.columns(3) [cite: 5]
+        [cite_start]m1.metric("Nettó Bevétel", f"{df['ST_NEFT'].sum():,.0f} Ft") [cite: 5]
+        [cite_start]m2.metric("Eladott Mennyiség", f"{df['ST_MENNY'].sum():,.0f} db") [cite: 5]
+        [cite_start]m3.metric("Tranzakciók", f"{len(df):,.0f}") [cite: 5]
+
+        # --- 6. ÚJ: HAVI ÖSSZEHASONLÍTÓ TÁBLÁZAT ---
+        st.divider()
         st.subheader("📊 Havi összehasonlítás és százalékos eltérés")
         
-        # Pivot tábla: Hónapok a sorokban, Évek az oszlopokban
         pivot_df = df.pivot_table(index=['Hónap_szám', 'Hónap'], columns='Év', values='ST_NEFT', aggfunc='sum').fillna(0)
+        years = sorted([c for c in pivot_df.columns if isinstance(c, int)])
         
-        years = sorted(pivot_df.columns)
         if len(years) >= 2:
-            y1, y2 = years[-2], years[-1] # Az utolsó két év összehasonlítása
-            
-            # Százalékos eltérés számítása
+            y1, y2 = years[-2], years[-1]
             pivot_df['Eltérés (%)'] = ((pivot_df[y2] / pivot_df[y1]) - 1) * 100
-            
-            # Csak a hónap neve maradjon az indexben a megjelenítéshez
             display_df = pivot_df.reset_index(level=0, drop=True)
 
-            # Formázó függvény a színes százalékokhoz
-            def color_diff_style(val):
-                color = 'green' if val > 0 else 'red'
-                return f'color: {color}; font-weight: bold'
+            def color_diff(val):
+                return f'color: {"green" if val > 0 else "red"}; font-weight: bold'
 
-            # Táblázat kirajzolása
-            st.table(
-                display_df.style.format({
-                    y1: "{:,.0f} Ft",
-                    y2: "{:,.0f} Ft",
-                    'Eltérés (%)': "{:+.2f}%"
-                }).applymap(color_diff_style, subset=['Eltérés (%)'])
-            )
+            st.table(display_df.style.format({
+                y1: "{:,.0f} Ft", y2: "{:,.0f} Ft", 'Eltérés (%)': "{:+.2f}%"
+            }).applymap(color_diff, subset=['Eltérés (%)']))
 
-            # --- ÖSSZESEN BLOKK ---
-            sum_y1 = pivot_df[y1].sum()
-            sum_y2 = pivot_df[y2].sum()
-            total_diff = ((sum_y2 / sum_y1) - 1) * 100
-            color_total = "green" if total_diff > 0 else "red"
-
-            st.markdown(f"""
-                <div style="background-color:#f8f9fb; padding:25px; border-radius:15px; border: 1px solid #e6e9ef; text-align: center;">
-                    <h2 style="margin-top:0; color:#31333f;">Összesített Eredmény</h2>
-                    <p style="font-size:24px; margin:0;">
-                        <b>{y1}:</b> {sum_y1:,.0f} Ft &nbsp;&nbsp; | &nbsp;&nbsp;
-                        <b>{y2}:</b> {sum_y2:,.0f} Ft &nbsp;&nbsp; | &nbsp;&nbsp;
-                        <b>Eltérés: <span style="color:{color_total};">{total_diff:+.2f}%</span></b>
-                    </p>
-                </div>
-                """, unsafe_allow_html=True)
+            # Végösszegek megjelenítése
+            sum1, sum2 = pivot_df[y1].sum(), pivot_df[y2].sum()
+            total_diff = ((sum2 / sum1) - 1) * 100
+            st.markdown(f"**Összesen {y1}:** {sum1:,.0f} Ft | **Összesen {y2}:** {sum2:,.0f} Ft | **Eltérés:** {total_diff:+.2f}%")
         else:
-            st.warning("Legalább két különböző év (pl. 2024 és 2025) adatai szükségesek az összehasonlításhoz!")
+            st.info("Több év adatai szükségesek az összehasonlításhoz.")
 
-        # --- 7. AI VIZUALIZÁCIÓS LAB ---
+        # --- 7. AI STRATÉGA ÉS GRAFIKON GENERÁTOR ---
+        # [cite_start]A megadott AI logika integrálása [cite: 6, 7]
         st.divider()
         st.subheader("🤖 AI Vizualizációs Lab")
-        user_q = st.text_area("Milyen elemzést készítsek még?", placeholder="Pl. Melyik termék emelkedett a legjobban?")
+        user_q = st.text_area("Milyen elemzést készítsek?", placeholder="Pl.: Hasonlítsd össze a top 5 partner bevételét...")
 
-        if st.button("AI Elemzés indítása") and openai_api_key:
-            with st.spinner("Az AI elemzi az adatokat..."):
+        if st.button("Elemzés és Grafikon készítése") and openai_api_key:
+            with st.spinner("AI dolgozik az adatokon..."):
                 client = OpenAI(api_key=openai_api_key)
-                
-                # Adatok tömörítése az AI-nak
-                top_products = df.groupby('ST_CIKKNEV')['ST_NEFT'].sum().sort_values(ascending=False).head(10).to_dict()
-                
-                prompt = f"""
-                Pékség elemző vagy. Válaszolj magyarul.
-                ADATOK:
-                Havi statisztika: {pivot_df.to_dict()}
-                Top 10 termék: {top_products}
-                KÉRDÉS: {user_q}
-                FORMÁTUM: Szöveges elemzés, majd ha grafikon kell: CHART_DATA [{"Cimke": "...", "Ertek": 0}]
-                """
-                
-                res = client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                
-                answer = res.choices[0].message.content
-                if "CHART_DATA" in answer:
-                    parts = answer.split("CHART_DATA")
-                    st.markdown(parts[0])
-                    try:
-                        c_data = json.loads(parts[1].strip().replace("'", '"'))
-                        fig = px.bar(pd.DataFrame(c_data), x='Cimke', y='Ertek', title="AI Grafikon")
-                        st.plotly_chart(fig)
-                    except: st.warning("Grafikon hiba.")
-                else: st.markdown(answer)
+                [cite_start]top_partners = df.groupby('SF_UGYFELNEV')['ST_NEFT'].sum().sort_values(ascending=False).head(20).to_dict() [cite: 7]
+                [cite_start]top_products = df.groupby('ST_CIKKNEV')['ST_NEFT'].sum().sort_values(ascending=False).head(20).to_dict() [cite: 7]
+                monthly_yoy = df.groupby(['Év', 'Hónap_szám'])['ST_NEFT'].sum().unstack(level=0).to_dict()
 
+                [cite_start]prompt = f"Üzleti elemző vagy. Adatok: Partnerek: {top_partners}, Termékek: {top_products}, Trendek: {monthly_yoy}. Kérdés: {user_q}. Válaszolj szöveggel és ha kell grafikont, adj CHART_DATA JSON-t." [cite: 8, 9, 10, 11]
+
+                [cite_start]res = client.chat.completions.create(model="gpt-4o", messages=[{"role": "system", "content": "Üzleti elemző vagy."}, {"role": "user", "content": prompt}]) [cite: 12]
+                [cite_start]answer = res.choices[0].message.content [cite: 13]
+                
+                if "CHART_DATA" in answer:
+                    [cite_start]text_part = answer.split("CHART_DATA")[0] [cite: 13]
+                    [cite_start]json_part = answer.split("CHART_DATA")[1].strip() [cite: 14]
+                    st.markdown(text_part)
+                    try:
+                        [cite_start]clean_json = json_part.replace("```json", "").replace("```", "").strip() [cite: 15]
+                        [cite_start]chart_df = pd.DataFrame(json.loads(clean_json)) [cite: 15, 16]
+                        [cite_start]fig = px.bar(chart_df, x=chart_df.columns[0], y=chart_df.columns[1], title="AI Elemzés") [cite: 17]
+                        st.plotly_chart(fig, use_container_width=True)
+                    [cite_start]except: st.warning("Grafikon hiba.") [cite: 18]
+                [cite_start]else: st.markdown(answer) [cite: 18]
+
+        with st.expander("📋 Nyers adatok megtekintése"):
+            [cite_start]st.dataframe(df, use_container_width=True) [cite: 19]
 else:
-    st.info("👋 Kezdéshez tölts fel CSV fájlokat a bal oldali menüben!")
+    st.info("👋 Kezdéshez tölts fel CSV fájlokat a bal oldalon!")
